@@ -25,12 +25,14 @@ public sealed partial class BatteryMonitor
     private const long RazerTotalBudgetMs = 1500;
 
     internal const byte RazerPaReportId = 0x02;
+    internal const byte RazerBarracudaReportId = 0x01;
+    internal const int RazerBarracudaPid = 0x053A;
     internal const byte RazerPaCmdBattery = 0x21;
     internal const byte RazerPaCmdCharging = 0x2A;
 
     internal static readonly byte[] RazerTxCandidates = [0x1F, 0x3F, 0xFF];
-    // Only 0x0555 is verified by capture; other PA headsets remain excluded until tested.
-    private static readonly HashSet<int> RazerPaPids = [0x0555];
+    // These PA receivers use different frame offsets; both are verified from real hardware captures.
+    private static readonly HashSet<int> RazerPaPids = [0x0555, RazerBarracudaPid];
     private static readonly ConcurrentDictionary<int, byte> PreferredRazerTxByPid = new();
 
     internal static IEnumerable<int> RazerFeaturePids => RazerDevices.Keys.Where(pid => !RazerPaPids.Contains(pid));
@@ -100,6 +102,7 @@ public sealed partial class BatteryMonitor
         [0x02D5] = ("Razer BlackWidow V4 TKL HyperSpeed", "keyboard"),
         [0x02D7] = ("Razer BlackWidow V4 TKL HyperSpeed", "keyboard"),
         // Headsets (PA protocol)
+        [RazerBarracudaPid] = ("Razer Barracuda Pro (2.4 GHz)", "headphones"),
         [0x0555] = ("Razer BlackShark V2 Pro", "headphones"),
     };
 
@@ -177,6 +180,46 @@ public sealed partial class BatteryMonitor
     {
         if (report.Length >= 16 && report[0] == RazerPaReportId && report[12] == cmdId && report[13] == 0x01)
             return report[15];
+        return null;
+    }
+
+    /// <summary>
+    /// Barracuda Pro PA frames, decoded from a Synapse USBPcap capture and independently documented by
+    /// HeyOkay/HaloBattery (providers/barracuda.py). Its request and reply fields are two bytes earlier than
+    /// the BlackShark layout, so it deliberately has separate builders and parsing.
+    /// </summary>
+    internal static byte[] BuildRazerBarracudaRemoteFrame(bool on)
+    {
+        var buf = new byte[RazerPaReportLength];
+        buf[0] = RazerBarracudaReportId; buf[1] = 0x80; buf[2] = 0x07;
+        buf[3] = (byte)'P'; buf[4] = (byte)'A'; buf[5] = 0x0E; buf[6] = 0x08;
+        buf[7] = 0x02; buf[8] = 0xE1; buf[9] = (byte)(on ? 1 : 0);
+        return buf;
+    }
+
+    internal static byte[] BuildRazerBarracudaQueryFrame(byte cmdId)
+    {
+        var buf = new byte[RazerPaReportLength];
+        buf[0] = RazerBarracudaReportId; buf[1] = 0x80; buf[2] = 0x08;
+        buf[3] = (byte)'P'; buf[4] = (byte)'A'; buf[5] = 0x08; buf[6] = 0x08;
+        buf[7] = 0x03; buf[8] = cmdId;
+        return buf;
+    }
+
+    internal static byte? ParseRazerBarracudaReply(ReadOnlySpan<byte> report, byte cmdId)
+    {
+        foreach (var offset in new[] { 0, -1 })
+        {
+            if (offset == -1 && report.Length > 0 && report[0] == RazerBarracudaReportId) continue;
+            var marker = 3 + offset;
+            var command = 13 + offset;
+            if (marker < 0 || command < 0 || report.Length <= command + 3) continue;
+            if (report[marker] != (byte)'P' || report[marker + 1] != (byte)'I') continue;
+            if (report[command] != cmdId || report[command + 1] is not (0x01 or 0x02)) continue;
+            var length = report[command + 2];
+            if (length is > 0 and <= 32 && report.Length >= command + 3 + length)
+                return report[command + 3];
+        }
         return null;
     }
 
@@ -328,7 +371,9 @@ public sealed partial class BatteryMonitor
                                 && caps.OutputReportByteLength == RazerPaReportLength)
                             {
                                 synapseRunning ??= IsRazerSynapseRunning();
-                                if (!synapseRunning.Value)
+                                // The Barracuda vendor collection is shareable; keep the established BlackShark
+                                // protection because Synapse can still own that receiver exclusively.
+                                if (pid == RazerBarracudaPid || !synapseRunning.Value)
                                     dev = ReadRazerPaDevice(path, handle, pid, deadline);
                             }
                         }
@@ -446,15 +491,24 @@ public sealed partial class BatteryMonitor
             if (fatal || drained is null) break;
         }
 
+        var barracuda = pid == RazerBarracudaPid;
+        byte[] Remote(bool on) => barracuda ? BuildRazerBarracudaRemoteFrame(on) : BuildRazerPaRemoteFrame(on);
+
         if (Environment.TickCount64 >= deadline) return null;
-        if (!WritePaOverlapped(rwHandle, BuildRazerPaRemoteFrame(true), 200)) return null;
+        var woke = false;
+        for (int attempt = 0; attempt < (barracuda ? 3 : 1) && Environment.TickCount64 < deadline; attempt++)
+        {
+            if (WritePaOverlapped(rwHandle, Remote(true), 200)) { woke = true; break; }
+            Thread.Sleep(150 * (attempt + 1));
+        }
+        if (!woke) return null;
         Thread.Sleep(35);
 
         try
         {
-            var bat = QueryRazerPa(rwHandle, RazerPaCmdBattery, deadline);
+            var bat = QueryRazerPa(rwHandle, RazerPaCmdBattery, deadline, barracuda);
             if (bat is null || bat.Value > 100) return null;
-            var chg = QueryRazerPa(rwHandle, RazerPaCmdCharging, deadline);
+            var chg = QueryRazerPa(rwHandle, RazerPaCmdCharging, deadline, barracuda);
             bool? charging = chg is not null ? chg.Value != 0 : null;
 
             var (name, knownKind) = ResolveRazerNameAndKind(infoHandle, pid);
@@ -463,14 +517,14 @@ public sealed partial class BatteryMonitor
         finally
         {
             // Restore remote mode off only when our initial "on" write succeeded.
-            WritePaOverlapped(rwHandle, BuildRazerPaRemoteFrame(false), 150);
+            WritePaOverlapped(rwHandle, Remote(false), 150);
         }
     }
 
-    private static byte? QueryRazerPa(SafeFileHandle handle, byte cmdId, long deadline)
+    private static byte? QueryRazerPa(SafeFileHandle handle, byte cmdId, long deadline, bool barracuda)
     {
-        var query = BuildRazerPaQueryFrame(cmdId);
-        for (int attempt = 0; attempt < 2 && Environment.TickCount64 < deadline; attempt++)
+        var query = barracuda ? BuildRazerBarracudaQueryFrame(cmdId) : BuildRazerPaQueryFrame(cmdId);
+        for (int attempt = 0; attempt < (barracuda ? 4 : 2) && Environment.TickCount64 < deadline; attempt++)
         {
             if (!WritePaOverlapped(handle, query, 200)) break;
 
@@ -480,7 +534,7 @@ public sealed partial class BatteryMonitor
                 var (reply, fatal) = ReadPaOverlapped(handle, RazerPaReportLength, 50);
                 if (fatal) return null;
                 if (reply is null) continue;
-                var val = ParseRazerPaReply(reply, cmdId);
+                var val = barracuda ? ParseRazerBarracudaReply(reply, cmdId) : ParseRazerPaReply(reply, cmdId);
                 if (val is not null) return val;
             }
         }

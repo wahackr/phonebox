@@ -25,23 +25,21 @@ people who proposed or prototyped something are credited in the [changelog](../C
 - **Codex permission prompts on the phone**: answer Codex's own approval requests with Allow / Deny, like Claude Code's
   ([#253](https://github.com/ersinkoc/phonebox/issues/253), pull request
   [#254](https://github.com/ersinkoc/phonebox/pull/254)).
+- **Live Codex quota without a running session**: read the quota through Codex's own app-server, so the numbers
+  update while Codex isn't running on this computer ([#298](https://github.com/ersinkoc/phonebox/issues/298), pull
+  request [#290](https://github.com/ersinkoc/phonebox/pull/290)).
+- **GitHub Copilot CLI status on the panel**: a documented, read-only bridge from Copilot CLI hooks (also in WSL2) to
+  the webhook API, status and timestamps only ([#317](https://github.com/ersinkoc/phonebox/issues/317)).
 - **Voice commands**: say what you want and a language model of your choice (local through Ollama, or a hosted one)
   picks from the shortcuts you allowed; opt-in, off by default ([#257](https://github.com/ersinkoc/phonebox/issues/257)).
-- **Pomodoro: an optional sound when a step ends**, off by default and silent in night mode
-  ([#267](https://github.com/ersinkoc/phonebox/issues/267)).
-- **Steam friends and activity widgets** ([#289](https://github.com/ersinkoc/phonebox/issues/289), pull request
-  [#244](https://github.com/ersinkoc/phonebox/pull/244)): scope agreed; waiting for a rebase and the review fixes.
-- **Immich album as a photo frame source** ([#278](https://github.com/ersinkoc/phonebox/issues/278), pull requests
-  [#279](https://github.com/ersinkoc/phonebox/pull/279) and [#280](https://github.com/ersinkoc/phonebox/pull/280)).
-- **Windows audio mixer and device batteries** ([#283](https://github.com/ersinkoc/phonebox/issues/283)): one mixer
-  control per app with the names Windows shows, idle helper sessions hidden, a mute icon, compact output and
-  microphone pickers with short labels, Razer Barracuda Pro batteries, and no stale readings from disconnected
-  Bluetooth devices. The reporter has a working build; to come as several small pull requests.
 
 ## Open for a contributor
 
 Agreed in principle, not being built in-house. Say so on the issue before starting.
 
+- **Typing from the phone's keyboard**: a text field and a row of keys (Enter, Backspace, Esc, Tab, arrows, optionally
+  Ctrl / Alt / Shift) on the Dictation widget, behind its **Type the text on the computer** switch and through
+  `/api/dictate`; nothing logged or stored ([#320](https://github.com/ersinkoc/phonebox/issues/320)).
 - **Photo frame pictures as the page background** ([#288](https://github.com/ersinkoc/phonebox/issues/288)): a
   per-page background from the photo frame's folder, dimmed under the widgets, using the same `/api/photos` feed.
 - **Android screen saver (DreamService)** ([#287](https://github.com/ersinkoc/phonebox/issues/287)): show the panel as
@@ -67,6 +65,9 @@ Agreed in principle, not being built in-house. Say so on the issue before starti
 
 ## Waiting on a report
 
+- **Razer BlackShark V2 Pro missing from Device batteries after 0.9.24**
+  ([#326](https://github.com/ersinkoc/phonebox/issues/326)): dongle or Bluetooth, Synapse, and what Windows reports are
+  needed to tell whether the new filter for disconnected Bluetooth devices hides it.
 - **Intel GPU load on Linux** ([#224](https://github.com/ersinkoc/phonebox/issues/224)): in 0.9.20, to be confirmed
   on real hardware.
 - **Network widget about 4x too high on a Realtek USB 2.5GbE adapter**

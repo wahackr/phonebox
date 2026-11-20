@@ -17,7 +17,7 @@ flowchart LR
     Agent --- Mon["System, GPU, media, volume,<br/>processes, sessions, quotas, GitHub"]
     Agent --- Set["Settings page &<br/>layout editor"]
   end
-  Proxy -->|"USB: adb reverse → 127.0.0.1:8765"| Agent
+  Proxy -->|"USB: adb reverse → its own loopback port,<br/>pinned TLS + the app's USB key"| Agent
   Proxy -.->|"Wi-Fi / Tailscale: HTTPS :8766,<br/>pinned certificate + key"| Agent
   Hooks["Scripts, CI,<br/>Home Assistant"] -->|webhooks| Agent
 ```

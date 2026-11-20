@@ -20,7 +20,7 @@ public sealed class AdbReverseTests : IDisposable
     /// the app is installed, and "cmd package set-home-activity" fails on <paramref name="homeRefused"/> the way Android
     /// refuses it (an error line, exit code 1).</summary>
     private string FakeAdb(string[] devices, string reverseList, string? homeRefused, bool installed = true,
-        string? reverseRefused = null)
+        string? reverseRefused = null, string? usbKey = null, string? appVersion = null, bool ownsProvider = true)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -32,6 +32,9 @@ public sealed class AdbReverseTests : IDisposable
                 "if \"%2\"==\"" + reverseRefused + "\" if \"%3\"==\"reverse\" if \"%4\"==\"--list\" (exit /b 1)",
                 "if \"%3\"==\"reverse\" if \"%4\"==\"--list\" (" + (reverseList.Length == 0 ? "exit /b 0)" : "echo " + reverseList + "& exit /b 0)"),
                 "if \"%4\"==\"pm\" (" + (installed ? "echo package:/data/app/base.apk& exit /b 0)" : "exit /b 1)"),
+                "if \"%4\"==\"content\" (" + (usbKey is null ? "echo No result found.& exit /b 0)" : "echo Row: 0 key=" + usbKey + "& exit /b 0)"),
+                "if \"%4\"==\"dumpsys\" (" + (appVersion is null ? "" : "echo     versionName=" + appVersion + "& ")
+                    + (usbKey is not null && ownsProvider ? "echo   [net.oxog.phonebox.deskpanel.usb]:& echo     Provider{3ec2f24 net.oxog.phonebox.deskpanel/.UsbKeyProvider}& " : "") + "exit /b 0)",
                 "if \"%6\"==\"set-home-activity\" if \"%2\"==\"" + homeRefused + "\" (echo Error: Failed to set default home.& exit /b 1)",
                 "if \"%6\"==\"set-home-activity\" (echo Success& exit /b 0)",
                 "exit /b 0", ""));
@@ -45,6 +48,9 @@ public sealed class AdbReverseTests : IDisposable
             "if [ \"$2\" = '" + reverseRefused + "' ] && [ \"$3\" = reverse ] && [ \"$4\" = --list ]; then exit 1; fi",
             "if [ \"$3\" = reverse ] && [ \"$4\" = --list ]; then " + (reverseList.Length == 0 ? "" : "echo '" + reverseList + "'; ") + "exit 0; fi",
             "if [ \"$4\" = pm ]; then " + (installed ? "echo package:/data/app/base.apk; exit 0; fi" : "exit 1; fi"),
+            "if [ \"$4\" = content ]; then " + (usbKey is null ? "echo 'No result found.'; exit 0; fi" : "echo 'Row: 0 key=" + usbKey + "'; exit 0; fi"),
+            "if [ \"$4\" = dumpsys ]; then " + (appVersion is null ? "" : "echo '    versionName=" + appVersion + "'; ")
+                + (usbKey is not null && ownsProvider ? "printf '  [net.oxog.phonebox.deskpanel.usb]:\\n    Provider{3ec2f24 net.oxog.phonebox.deskpanel/.UsbKeyProvider}\\n'; " : "") + "exit 0; fi",
             "if [ \"$6\" = set-home-activity ] && [ \"$2\" = '" + homeRefused + "' ]; then echo 'Error: Failed to set default home.'; exit 1; fi",
             "if [ \"$6\" = set-home-activity ]; then echo Success; exit 0; fi",
             "exit 0", ""));
@@ -181,13 +187,13 @@ public sealed class AdbReverseTests : IDisposable
     }
 
     /// <summary>Runs the loop until <paramref name="done"/> holds or three rounds ("adb devices" calls) went by.</summary>
-    private async Task<string[]> RunUntil(string fake, object settings, AgentEndpoint? endpoint, Func<string[], bool> done)
+    private async Task<string[]> RunUntil(string fake, object settings, AgentEndpoint? endpoint, Func<string[], bool> done, UsbLink? usb = null)
     {
         var cfgPath = Path.Combine(_dir, "config.json");
         File.WriteAllText(cfgPath, JsonSerializer.Serialize(settings));
         var store = new ConfigStore(cfgPath);
         Assert.Equal(fake, AdbReverse.FindAdb(store.Get().AdbPath)); // never reach the real adb
-        var adb = new AdbReverse(store, NullLogger<AdbReverse>.Instance, endpoint);
+        var adb = new AdbReverse(store, NullLogger<AdbReverse>.Instance, endpoint, usb);
         using var cts = new CancellationTokenSource();
         await adb.StartAsync(cts.Token);
         try
@@ -245,5 +251,141 @@ public sealed class AdbReverseTests : IDisposable
             null, _ => false);
         Assert.True(calls.Count(c => c == "devices") >= 2, "the loop did not run twice");
         Assert.DoesNotContain(calls, c => c.StartsWith("-s FAKE1 reverse tcp:") || c.Contains("am start"));
+    }
+
+    /// <summary>
+    /// A newly plugged-in phone is woken and shows the panel, unless Settings › Display › open on connect is off (a phone
+    /// that is also used for app testing): then only the reverse rule is set and the phone is left as it is.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ANewPhoneOpensThePanelOnlyWhenOpenOnConnectIsOn(bool openOnConnect)
+    {
+        var fake = FakeAdb(["FAKE1"], "", homeRefused: null);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1",
+                display = new { homeScreen = false, keepAwake = false, followComputerLock = false, openOnConnect } },
+            null, c => c.Count(x => x == "devices") >= 2);
+        Assert.Contains("-s FAKE1 reverse tcp:8765 tcp:8765", calls);
+        Assert.Equal(openOnConnect, calls.Contains("-s FAKE1 shell am start -n net.oxog.phonebox.deskpanel/.MainActivity"));
+        Assert.Equal(openOnConnect, calls.Contains("-s FAKE1 shell input keyevent KEYCODE_WAKEUP"));
+    }
+
+    [Fact]
+    public void OpenOnConnectIsOnByDefault()
+    {
+        var path = Path.Combine(_dir, "config.json");
+        File.WriteAllText(path, "{}");
+        Assert.True(new ConfigStore(path).Get().Display.OpenOnConnect);
+    }
+
+    private const string UsbKey = "k3Y_0123456789abcdefghijklmnopqrstuvwxyzABCD";
+    private const string KeyQuery = "-s FAKE1 shell content query --uri content://net.oxog.phonebox.deskpanel.usb/key";
+    private const string Pin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string PinWrite = "-s FAKE1 shell content insert --uri content://net.oxog.phonebox.deskpanel.usb/pin --bind fp:s:" + Pin;
+    private const string Dumpsys = "-s FAKE1 shell dumpsys package net.oxog.phonebox.deskpanel";
+
+    /// <summary>
+    /// The tunnel ends on the agent's USB port, not on the local port the settings page and the hooks use, and the agent
+    /// reads the key the phone's app made, so that only that app gets through.
+    /// </summary>
+    [Fact]
+    public async Task ANewPhoneGetsTheTunnelToTheUsbPortAndItsAppsKeyIsRead()
+    {
+        var fake = FakeAdb(["FAKE1"], "", homeRefused: null, usbKey: UsbKey);
+        var usb = new UsbLink(45678, Pin);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1", display = new { homeScreen = false, keepAwake = false, followComputerLock = false } },
+            new AgentEndpoint(8765), c => c.Contains("-s FAKE1 shell am start -n net.oxog.phonebox.deskpanel/.MainActivity"), usb);
+        Assert.Contains("-s FAKE1 reverse tcp:8765 tcp:45678", calls);
+        Assert.DoesNotContain("-s FAKE1 reverse tcp:8765 tcp:8765", calls);
+        Assert.Contains(KeyQuery, calls);
+        Assert.Contains(PinWrite, calls); // the app pins the tunnel's certificate
+        Assert.True(Array.IndexOf(calls, Dumpsys) < Array.IndexOf(calls, KeyQuery), "the provider's owner is checked first");
+        Assert.True(usb.HasKey("FAKE1"));
+        Assert.Equal(UsbLink.Access.Allowed, usb.Authorize("GET", "/api/state", "", "Bearer " + UsbKey));
+        Assert.Contains("-s FAKE1 shell am start -n net.oxog.phonebox.deskpanel/.MainActivity", calls);
+    }
+
+    /// <summary>
+    /// The USB port changes when the agent restarts. The phone still has the old rule: it is pointed at the new port,
+    /// but the phone was not just plugged in, so it is neither woken nor brought to the panel.
+    /// </summary>
+    [Theory]
+    [InlineData("UsbFfs tcp:8765 tcp:8765")]  // an agent from before the USB port
+    [InlineData("UsbFfs tcp:8765 tcp:51234")] // this agent's previous run
+    public async Task AnAgentRestartMovesTheTunnelWithoutWakingThePhone(string existing)
+    {
+        var fake = FakeAdb(["FAKE1"], existing, homeRefused: null, usbKey: UsbKey);
+        var usb = new UsbLink(45678, Pin);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1", display = new { homeScreen = false, keepAwake = false, followComputerLock = false } },
+            new AgentEndpoint(8765), c => c.Count(x => x == "devices") >= 2, usb);
+        Assert.Contains("-s FAKE1 reverse tcp:8765 tcp:45678", calls);
+        Assert.DoesNotContain(calls, c => c.Contains("am start") || c.Contains("KEYCODE_WAKEUP"));
+        Assert.True(usb.HasKey("FAKE1"));
+    }
+
+    /// <summary>
+    /// An app from before the key has nothing to answer with: the agent reads its version for the update offer and asks
+    /// again only now and then, not every round.
+    /// </summary>
+    [Fact]
+    public async Task AnAppWithoutAKeyIsAskedRarelyAndItsVersionIsRead()
+    {
+        var fake = FakeAdb(["FAKE1"], "", homeRefused: null, usbKey: null, appVersion: "0.9.23");
+        var usb = new UsbLink(45678, Pin);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1", display = new { homeScreen = false, keepAwake = false, followComputerLock = false } },
+            new AgentEndpoint(8765), c => c.Count(x => x == "devices") >= 3, usb);
+        Assert.True(calls.Count(c => c == "devices") >= 3, "the loop did not run three times");
+        Assert.Equal(1, calls.Count(c => c == Dumpsys));
+        Assert.DoesNotContain(KeyQuery, calls);
+        Assert.DoesNotContain(PinWrite, calls);
+        Assert.False(usb.HasKey("FAKE1"));
+        Assert.Contains("-s FAKE1 reverse tcp:8765 tcp:45678", calls);
+    }
+
+    /// <summary>
+    /// Another app took the provider name while an older PhoneBox was installed and answers with a key of its own: the
+    /// app's own listing doesn't have the provider, so that key is never asked for, and the agent's pin is not written.
+    /// </summary>
+    [Fact]
+    public async Task AKeyFromAProviderTheAppDoesNotOwnIsNeverUsed()
+    {
+        var fake = FakeAdb(["FAKE1"], "", homeRefused: null, usbKey: UsbKey, appVersion: "0.9.23", ownsProvider: false);
+        var usb = new UsbLink(45678, Pin);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1", display = new { homeScreen = false, keepAwake = false, followComputerLock = false } },
+            new AgentEndpoint(8765), c => c.Count(x => x == "devices") >= 2, usb);
+        Assert.Contains(Dumpsys, calls);
+        Assert.DoesNotContain(KeyQuery, calls);
+        Assert.DoesNotContain(PinWrite, calls);
+        Assert.False(usb.HasKey("FAKE1"));
+        Assert.Equal(UsbLink.Access.Unauthorized, usb.Authorize("GET", "/api/state", "", "Bearer " + UsbKey));
+    }
+
+    [Theory]
+    [InlineData("UsbFfs tcp:8765 tcp:8765", true)]
+    [InlineData("UsbFfs tcp:9000 tcp:8765", false)]
+    [InlineData("", false)]
+    public void AnyRuleForThePhonesPortCounts(string list, bool expected) => Assert.Equal(expected, AdbReverse.HasAnyRule(list));
+
+    /// <summary>
+    /// The agent builds AdbReverse through dependency injection: it must get the USB link there, or the tunnel would
+    /// end on the local port again.
+    /// </summary>
+    [Fact]
+    public void TheAgentsAdbReverseGetsTheUsbLink()
+    {
+        var path = Path.Combine(_dir, "config.json");
+        File.WriteAllText(path, "{}");
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, new ConfigStore(path));
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, new AgentEndpoint(8765));
+        var usb = new UsbLink(45678, Pin);
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, usb);
+        Microsoft.Extensions.DependencyInjection.LoggingServiceCollectionExtensions.AddLogging(services);
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton<AdbReverse>(services);
+        using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+        var adb = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<AdbReverse>(provider);
+        var target = typeof(AdbReverse).GetProperty("TargetRule", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        Assert.Equal("tcp:45678", target.GetValue(adb));
     }
 }

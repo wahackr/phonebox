@@ -8,7 +8,8 @@ public sealed class ControlDeckCommandTests
     {
         public readonly List<string> Writes=[];
         public List<DeckSession> Sessions=[];
-        public DeckAudio Audio()=>new(true,null,[new("speaker","Speaker","output",true,40,false,0,2),new("headset","Headset","output",false,60,false,0,2),new("mic","Mic","input",true,70,true,0,1)],Sessions.ToArray());
+        public Dictionary<string,string> Defaults=new(){{"output:1","speaker"}};
+        public DeckAudio Audio()=>new(true,null,[new("speaker","Speaker","output",true,40,false,0,2),new("headset","Headset","output",false,60,false,0,2),new("mic","Mic","input",true,70,true,0,1)],Sessions.ToArray(),Defaults);
         public bool Device(string id,int? volume,bool? muted,int? channel=null){Writes.Add("device:"+id);return true;}
         public bool Session(string id,int? volume,bool? muted){Writes.Add("session:"+id);Sessions=Sessions.Select(s=>s.Id==id?s with{Volume=volume??s.Volume,Muted=muted??s.Muted}:s).ToList();return true;}
         public bool DefaultDevice(string id,int? role=null){Writes.Add("default:"+id+":"+role);return true;}
@@ -64,6 +65,79 @@ public sealed class ControlDeckCommandTests
         Assert.False((await f.Act("device","speaker",101)).Ok);
         Assert.False((await f.Act("device","speaker")).Ok);
         Assert.Empty(f.Native.Writes);
+    }
+    [Fact]
+    public async Task GroupedApplicationVolumeUpdatesEveryMatchingSessionAcrossOutputs()
+    {
+        using var f=new Fixture();
+        f.Native.Sessions=
+        [
+            new("chrome-speakers","Chrome",10,"speaker",100,false,0),
+            new("chrome-headset","chrome",11,"headset",32,true,0),
+            new("other","OpenCode",12,"speaker",80,false,0),
+        ];
+        Assert.True((await f.Act("session","application:CHROME",55)).Ok);
+        Assert.Equal(["session:chrome-speakers","session:chrome-headset"],f.Native.Writes);
+        Assert.All(f.Native.Sessions.Where(s=>s.Name.Equals("chrome",StringComparison.OrdinalIgnoreCase)),s=>Assert.Equal(55,s.Volume));
+        Assert.Equal(80,f.Native.Sessions.Single(s=>s.Name=="OpenCode").Volume);
+    }
+    [Fact]
+    public async Task SnapshotGroupsApplicationSessionsAcrossOutputs()
+    {
+        using var f=new Fixture();
+        f.Native.Sessions=
+        [
+            new("chrome-speakers","Chrome",10,"speaker",100,false,.2f),
+            new("chrome-headset","chrome",11,"headset",32,true,.8f),
+            new("other","OpenCode",12,"speaker",80,false,.1f),
+        ];
+        var json=System.Text.Json.JsonSerializer.Serialize(await f.Deck.Snapshot(default));
+        using var document=System.Text.Json.JsonDocument.Parse(json);
+        var sessions=document.RootElement.GetProperty("audio").GetProperty("Sessions");
+        var chrome=Assert.Single(sessions.EnumerateArray(),s=>s.GetProperty("Id").GetString()=="application:chrome");
+        Assert.Equal(.8,chrome.GetProperty("Peak").GetDouble(),.001);
+        Assert.Equal(100,chrome.GetProperty("Volume").GetInt32());
+    }
+    [Fact]
+    public async Task SnapshotHidesInactiveSessionsButGroupedWritesStillReachThem()
+    {
+        using var f=new Fixture();
+        f.Native.Sessions=
+        [
+            new("active","Friendly app",10,"speaker",100,false,0,"rawapp",true),
+            new("inactive","Friendly app",10,"headset",40,false,0,"rawapp",false),
+        ];
+        var json=System.Text.Json.JsonSerializer.Serialize(await f.Deck.Snapshot(default));
+        using var document=System.Text.Json.JsonDocument.Parse(json);
+        Assert.Single(document.RootElement.GetProperty("audio").GetProperty("Sessions").EnumerateArray());
+        Assert.True((await f.Act("session","application:friendly app",55)).Ok);
+        Assert.Equal(["session:active","session:inactive"],f.Native.Writes);
+    }
+    [Fact]
+    public async Task UnknownProcessesDoNotCollapseIntoOneApplication()
+    {
+        using var f=new Fixture();
+        f.Native.Sessions=
+        [
+            new("unknown-one","Application",10,"speaker",100,false,0,"",true),
+            new("unknown-two","Application",11,"speaker",80,false,0,"",true),
+        ];
+        var json=System.Text.Json.JsonSerializer.Serialize(await f.Deck.Snapshot(default));
+        using var document=System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal(2,document.RootElement.GetProperty("audio").GetProperty("Sessions").GetArrayLength());
+    }
+    [Fact]
+    public async Task GroupedSessionIdFromAnExistingPhoneUpdatesEveryCopy()
+    {
+        using var f=new Fixture();
+        f.Native.Sessions=
+        [
+            new("system-speakers","System sounds",0,"speaker",100,false,0),
+            new("system-headset","System sounds",0,"headset",70,false,0),
+        ];
+        Assert.True((await f.Act("session","application:System sounds",40)).Ok);
+        Assert.Equal(["session:system-speakers","session:system-headset"],f.Native.Writes);
+        Assert.All(f.Native.Sessions,s=>Assert.Equal(40,s.Volume));
     }
     [Fact]
     public async Task PowerActionsCannotBypassOptInOrHoldNonce()

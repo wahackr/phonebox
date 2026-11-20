@@ -313,7 +313,9 @@ class MainActivity : Activity(), SensorEventListener {
     inner class Bridge {
         private fun ok(key: String) = key == bridgeKey
 
-        private val validTrackpadTypes = setOf("move", "click", "rightClick", "mousedown", "mouseup", "scroll", "hscroll")
+        private val validTrackpadTypes = setOf("move", "click", "rightClick", "mousedown", "mouseup", "scroll", "hscroll") +
+            // multi-finger gestures: three or four fingers swiping, four or five spreading or pinching (the agent follows the Mac's settings)
+            listOf("swipe3up", "swipe3down", "swipe3left", "swipe3right", "swipe4up", "swipe4down", "swipe4left", "swipe4right", "spread", "pinch")
 
         @JavascriptInterface
         fun trackpad(key: String, type: String, dx: Float, dy: Float, delta: Float) {
@@ -439,6 +441,17 @@ class MainActivity : Activity(), SensorEventListener {
 
         @JavascriptInterface
         fun forgetPc(key: String, id: String) { if (ok(key)) link.forget(id) }
+
+        /** True when the Wake button can work: the active computer's MACs are known and the phone is on a local network. */
+        @JavascriptInterface
+        fun canWake(key: String): Boolean = ok(key) && link.canWake()
+
+        /**
+         * Sends a Wake-on-LAN packet to the paired computer [id]. Takes a computer's id and never a MAC address, so a
+         * page cannot aim the packet at an arbitrary machine. False when nothing could be sent.
+         */
+        @JavascriptInterface
+        fun wakePc(key: String, id: String): Boolean = ok(key) && link.wake(id)
 
         /** "landscape" (default), "portrait" or "auto" (follow the phone). */
         @JavascriptInterface

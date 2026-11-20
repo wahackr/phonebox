@@ -19,8 +19,10 @@ test('application mixer changes only the chosen session and reports its actual s
   await spotify.focus(); await spotify.press('ArrowLeft');
   await expect(spotify).toHaveValue('64'); await expect(browser).toHaveValue('30');
   await expect.poll(() => page.evaluate(async () => (await (await fetch('/agent/api/controls/state')).json()).audio.sessions.find(s => s.id === 'spotify').volume)).toBe(64);
-  await page.getByRole('button', { name: 'Mute Spotify', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Mute Spotify', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  const mute = page.getByRole('button', { name: 'Mute Spotify', exact: true });
+  await expect(mute.locator('svg')).toHaveCount(1);
+  await mute.click();
+  await expect(page.getByRole('button', { name: 'Unmute Spotify', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('output selection follows the authoritative default device', async ({ page }) => {
@@ -29,6 +31,14 @@ test('output selection follows the authoritative default device', async ({ page 
   await headphones.click();
   await expect(headphones).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Desk speakers', exact: true })).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('audio device selectors support compact layouts and exact-name labels', async ({ page }) => {
+  await show(page, 'audio-outputs', { layout: 'horizontal', labels: 'Desk speakers = 🔊\nHeadphones = 🎧' });
+  const chooser = page.locator('.deck-chooser-horizontal');
+  await expect(chooser).toBeVisible();
+  await expect(chooser.getByRole('button', { name: 'Desk speakers', exact: true })).toHaveText('🔊');
+  await expect(chooser.getByRole('button', { name: 'Headphones', exact: true })).toHaveText('🎧');
 });
 
 test('push-to-talk releases the microphone after pointer release', async ({ page }) => {

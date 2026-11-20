@@ -56,6 +56,8 @@ h2 { font-size: 20px; margin: 0 0 4px; }
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; min-width: 0; }
 .field label { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+/* a widget's options in groups: an option with a "section" starts a new one under a small heading */
+.opt-section { margin: 18px 0 10px; padding-top: 12px; border-top: 1px solid var(--line, #e5e7eb); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 .field .hint { font-size: 12px; color: var(--muted); }
 input[type=text], input[type=number], input[type=time], select, textarea {
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: none; min-width: 0;
@@ -588,10 +590,24 @@ nav a.on::before { color: var(--accent); }
 
       <div class="card">
         <h3 data-i18n="s.photos.title">Photo frame</h3>
-        <p class="hint" style="margin:0 0 12px" data-i18n="s.photos.hint">For the Photo frame widget: a folder of photos on this computer. A synced OneDrive, Dropbox or iCloud folder works too; photos that are only in the cloud are skipped. Large photos are scaled down here before they go to the phone, and the path stays on this computer.</p>
-        <div class="field"><label data-i18n="s.photos.folder">Photo folder (full path)</label>
-          <input type="text" data-bind="photos.folder" placeholder="C:\Users\you\Pictures\Frame" spellcheck="false" autocomplete="off"></div>
-        <label class="check"><input type="checkbox" data-bind="photos.subfolders"> <span data-i18n="s.photos.subfolders">Include subfolders</span></label>
+        <div class="field"><label data-i18n="s.photos.source">Photos from</label>
+          <select id="photosSource" data-bind="photos.source"><option value="folder" data-i18n="s.photos.sourceFolder">A folder on this computer</option><option value="immich" data-i18n="s.photos.sourceImmich">An Immich album</option></select></div>
+        <div id="photosFolderBox">
+          <p class="hint" style="margin:0 0 12px" data-i18n="s.photos.hint">For the Photo frame widget: a folder of photos on this computer. A synced OneDrive, Dropbox or iCloud folder works too; photos that are only in the cloud are skipped. Large photos are scaled down here before they go to the phone, and the path stays on this computer.</p>
+          <div class="field"><label data-i18n="s.photos.folder">Photo folder (full path)</label>
+            <input type="text" data-bind="photos.folder" placeholder="C:\Users\you\Pictures\Frame" spellcheck="false" autocomplete="off"></div>
+          <label class="check"><input type="checkbox" data-bind="photos.subfolders"> <span data-i18n="s.photos.subfolders">Include subfolders</span></label>
+        </div>
+        <div id="photosImmichBox" hidden>
+          <p class="hint" style="margin:0 0 12px" data-i18n="s.photos.immichHint">PhoneBox reads the album from your Immich server and shows the preview-size pictures Immich makes. A read-only API key is enough: it needs the album.read, asset.read and asset.view permissions (Immich › Account Settings › API Keys). The address and key stay on this computer; only this server is contacted.</p>
+          <div class="field"><label data-i18n="s.photos.immichUrl">Immich address</label>
+            <input type="text" data-bind="photos.immichUrl" placeholder="http://192.168.1.10:2283" spellcheck="false" autocomplete="off"></div>
+          <div class="field"><label data-i18n="s.photos.immichKey">API key</label>
+            <input type="password" data-bind="photos.immichKey" autocomplete="off"></div>
+          <div class="field"><label data-i18n="s.photos.immichAlbum">Album</label>
+            <select id="photosImmichAlbum"></select></div>
+          <div class="row"><button class="btn sm" id="photosImmichLoad" data-i18n="s.photos.immichLoad">Load albums</button><span class="hint" id="photosImmichState"></span></div>
+        </div>
       </div>
 
       <div class="card">
@@ -636,6 +652,16 @@ nav a.on::before { color: var(--accent); }
         <div class="grid2">
           <div class="field"><label data-i18n="s.discord.clientId">Client ID</label><input type="text" data-bind="discord.clientId" autocomplete="off" spellcheck="false"></div>
           <div class="field"><label data-i18n="s.discord.clientSecret">Client secret</label><input type="password" data-bind="discord.clientSecret" autocomplete="off"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 data-i18n="s.steam.title">Steam</h3>
+        <div class="row" style="margin-bottom:8px"><label class="switch"><input type="checkbox" data-bind="steam.enabled" aria-labelledby="steamEnabledLabel"><span></span></label> <span id="steamEnabledLabel" data-i18n="s.steam.enable">Connect Steam (for the Steam friends widget)</span></div>
+        <p class="hint" style="margin:0 0 12px" data-i18n="s.steam.hint">Create a user Web API key at steamcommunity.com/dev/apikey and enter your SteamID64 or profile URL. Custom profile names are resolved when saved; only the SteamID64 is stored. Your profile's friend list must be visible to this API key for GetFriendList; make Game details public to show games. The key stays on this computer. Step by step: docs/STEAM.md.</p>
+        <div class="grid2">
+          <div class="field"><label for="steamProfileInput" data-i18n="s.steam.id">SteamID64 or profile URL</label><input id="steamProfileInput" type="text" data-bind="steam.steamId" autocomplete="off" spellcheck="false" placeholder="76561198000000000"></div>
+          <div class="field"><label for="steamApiKeyInput" data-i18n="s.steam.key">User Web API key</label><input id="steamApiKeyInput" type="password" data-bind="steam.apiKey" autocomplete="off"></div>
         </div>
       </div>
 
@@ -717,6 +743,7 @@ nav a.on::before { color: var(--accent); }
         <label class="check"><input type="checkbox" data-bind="display.pin"> <span data-i18n="s.kiosk.pin">Pin the panel: Home and Recents stay on it (Android asks once; hold Back and Overview together to unpin)</span></label>
         <label class="check"><input type="checkbox" data-bind="display.homeScreen"> <span data-i18n="s.kiosk.homeScreen">Use the panel as the phone's home screen: it starts after a reboot and Home returns to it (turn off to get your launcher back)</span></label>
         <label class="check"><input type="checkbox" data-bind="display.keepAwake"> <span data-i18n="s.kiosk.keepAwake">Keep the phone awake: turn off Android's screen saver (it starts on the charger) and keep the screen on while plugged in (set over USB)</span></label>
+        <label class="check"><input type="checkbox" data-bind="display.openOnConnect"> <span data-i18n="s.kiosk.openOnConnect">Open PhoneBox when the phone is plugged in: wake the phone and bring the panel to the front whenever it connects over USB (turn off to open it yourself, for a phone you also use for app testing)</span></label>
         <label class="check" id="followComputerLockOption" style="display:none"><input type="checkbox" data-bind="display.followComputerLock"> <span data-i18n="s.kiosk.followLock">Follow the computer lock: turn the phone screen off when macOS locks; wake it and open PhoneBox when macOS unlocks (ADB required; unlock phones secured by a PIN or password manually)</span></label>
       </div>
 
@@ -746,11 +773,11 @@ nav a.on::before { color: var(--accent); }
       </div>
 
       <div class="card">
-        <h3 data-i18n="s.claude.title">Claude Code permission prompts</h3>
-        <p class="hint" style="margin:0 0 12px" data-i18n-html="s.claude.hint">When Claude Code asks for permission (run a command, edit a file…), the phone shows the request with
-          <b>Allow</b> and <b>Deny</b>. If the phone is not connected or nobody answers in time, Claude Code asks in the terminal as usual.
-          This needs a small hook in <code>~/.claude/settings.json</code>; PhoneBox adds it for you (a backup is kept next to the file).</p>
-        <div class="row" style="margin-bottom:12px"><button class="btn" id="hookBtn" data-i18n="s.claude.installHook">Install hook</button><span class="hint" id="hookState"></span></div>
+        <h3 data-i18n="s.approvals.title">AI coding agent permission prompts</h3>
+        <p class="hint" style="margin:0 0 12px" data-i18n-html="s.approvals.hint">When Codex or Claude Code asks for permission, the phone shows the request with <b>Allow</b> and <b>Deny</b>. Install the hook for each agent you use; existing hook files are preserved and backed up.</p>
+        <div class="row" style="margin-bottom:8px"><b style="min-width:92px" data-i18n="s.approvals.codex">Codex</b><button class="btn" id="codexHookBtn" data-i18n="s.claude.installHook">Install hook</button><span class="hint" id="codexHookState"></span></div>
+        <p class="hint" id="codexHookTrust" style="display:none;margin:-2px 0 12px 100px" data-i18n-html="s.approvals.codexTrust">Required once: start a new Codex session, then trust the PhoneBox hook in <b>Settings › Hooks</b> (desktop) or <code>/hooks</code> (CLI).</p>
+        <div class="row" style="margin-bottom:12px"><b style="min-width:92px" data-i18n="s.approvals.claude">Claude Code</b><button class="btn" id="claudeHookBtn" data-i18n="s.claude.installHook">Install hook</button><span class="hint" id="claudeHookState"></span></div>
         <div class="row" style="margin-bottom:8px"><label class="switch"><input type="checkbox" data-bind="claude.phoneApprovals"><span></span></label> <span data-i18n="s.claude.askOnPhone">Ask on the phone</span></div>
         <label class="check"><input type="checkbox" data-bind="claude.shareSessionTitles"> <span data-i18n="s.claude.shareSessionTitles">Show Claude Code chat titles on the phone (Claude Code often draws them from your first prompt)</span></label>
         <label class="check"><input type="checkbox" data-bind="claude.onlyWhenAway"> <span data-i18n="s.claude.onlyWhenAway">Only when I am away from the PC (no keyboard or mouse for a minute)</span></label>
@@ -770,6 +797,10 @@ nav a.on::before { color: var(--accent); }
         </div>
         <div class="field" style="margin-top:10px">
           <label class="check"><input type="checkbox" data-bind="codexBar.rotate"> <span data-i18n="s.quotas.rotate">Rotate providers automatically</span></label>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label class="check"><input type="checkbox" data-bind="codexBar.codexLiveQuota"> <span data-i18n="s.quotas.codexLive">Read live Codex quotas with the Codex CLI</span></label>
+          <span class="hint" data-i18n="s.quotas.codexLiveHint">Runs codex in the background every few minutes while a page shows Codex quotas (off by default). The Codex CLI manages its own sign-in and may refresh it.</span>
         </div>
         <div class="row" style="gap:12px;margin-top:10px">
           <div class="field" style="max-width:180px"><label data-i18n="s.quotas.pageSize">Cards at a time</label><input type="number" min="0" max="6" data-bind="codexBar.pageSize" data-type="int"><span class="hint" data-i18n="s.quotas.pageSizeHint">0 = show all</span></div>
@@ -1067,6 +1098,7 @@ const PRESETS_LINUX = [
   ['builtin:mute', 'Built-in: toggle mute'],
   ['builtin:monitor-off', 'Built-in: turn monitors off (X11)'],
   ['builtin:lock', 'Built-in: lock the session'],
+  ['builtin:wake', 'Built-in: wake a computer (Wake-on-LAN; args: MAC)'],
 ];
 const PRESETS_MACOS = [
   ['', 'Pick a preset…'],
@@ -1077,6 +1109,7 @@ const PRESETS_MACOS = [
   ['builtin:mute', 'Built-in: toggle mute'],
   ['builtin:monitor-off', 'Built-in: sleep the display'],
   ['builtin:lock', 'Built-in: lock (sleeps the display)'],
+  ['builtin:wake', 'Built-in: wake a computer (Wake-on-LAN; args: MAC)'],
 ];
 const presets = () => (osName === 'linux' ? PRESETS_LINUX : osName === 'macos' ? PRESETS_MACOS : PRESETS);
 const PRESETS = [
@@ -1091,6 +1124,7 @@ const PRESETS = [
   ['builtin:mute', 'Built-in: toggle mute'],
   ['builtin:monitor-off', 'Built-in: turn monitors off'],
   ['builtin:lock', 'Built-in: lock the PC'],
+  ['builtin:wake', 'Built-in: wake a computer (Wake-on-LAN; args: MAC)'],
 ];
 
 let cfg = null;        // settings being edited
@@ -1137,6 +1171,13 @@ function deckCols() {
 }
 
 function optVal(w, o) { return w.options && o.key in w.options ? w.options[o.key] : o.default; }
+/** An option with showWhen {key, not} is drawn only while the widget's option <key> is not set to <not> (an option that does nothing while another is off is not offered). */
+function optionShown(w, d, o) {
+  if (!o.showWhen) return true;
+  const driver = d.options.find((x) => x.key === o.showWhen.key);
+  const v = driver ? optVal(w, driver) : undefined;
+  return v !== o.showWhen.not;
+}
 /** The catalog's defaults for a widget type, written out so the panel and the agent see what the inspector shows. */
 function defaultOptions(type) {
   const options = {};
@@ -1510,7 +1551,7 @@ function renderInspector() {
         } }, t('s.js.dup')),
         h('button', { class: 'btn sm danger', onclick: () => { p.widgets.splice(selWidget, 1); selWidget = -1; renderCanvas(); renderInspector(); changed(); } }, t('s.js.remove')))),
     h('p', { class: 'hint', style: { margin: '0 0 12px' } }, d.desc),
-    ...d.options.map((o) => optionField(w, o)),
+    ...d.options.filter((o) => optionShown(w, d, o)).flatMap((o) => [...(o.section ? [h('h4', { class: 'opt-section' }, o.section)] : []), optionField(w, o)]),
     appearanceEditor(w, () => [cfg.display?.appearance, p.appearance], t('s.js.widgetAppearance'), true),
     h('div', { class: 'row', style: { gap: '8px' } }, num('x', t('s.js.col'), 0, catalog.cols - 1), num('y', t('s.js.row'), 0, catalog.rows - 1),
       num('w', t('s.js.width'), d.minW, catalog.cols), num('h', t('s.js.height'), d.minH, catalog.rows)));
@@ -1635,11 +1676,14 @@ function renderStackWidgetsOption(w, o) {
           h('button', { type: 'button', class: 'stack-btn-sm', title: t('panel.close'), onclick: (e) => { e.stopPropagation(); activeStackSubIdx = -1; renderInspector(); } }, icon('x'))
         ),
         ...(subOptions.length > 0
-          ? subOptions.map((subO) => optionField(subW, subO, (key, val) => {
-              item.options = item.options || {};
-              item.options[key] = val;
-              save(false);
-            }))
+          ? subOptions.filter((subO) => optionShown(subW, d, subO)).flatMap((subO) => [
+              ...(subO.section ? [h('h4', { class: 'opt-section' }, subO.section)] : []),
+              optionField(subW, subO, (key, val) => {
+                item.options = item.options || {};
+                item.options[key] = val;
+                save(false);
+              }),
+            ])
           : [h('p', { class: 'hint', style: { margin: '2px 0 0', fontSize: '12px' } }, 'This widget has no additional settings.')])
       );
       rowsAndConfigs.push(configBox);
@@ -1723,7 +1767,9 @@ function optionField(w, o, onValChange) {
           onchange: (e) => { set(o.key, e.target.checked); if (haFlag) renderInspector(); } }), o.label);
       }
     case 'select': {
-      const select = h('select', { onchange: (e) => set(o.key, e.target.value) });
+      // the options that depend on this one are drawn again when it changes
+      const drives = widgetDef(w.type)?.options?.some((x) => x.showWhen?.key === o.key);
+      const select = h('select', { onchange: (e) => { set(o.key, e.target.value); if (drives) renderInspector(); } });
       const fill = (choices) => {
         const selected = optVal(w, o);
         const seen = new Set(choices.map((c) => c[0]));
@@ -2111,6 +2157,59 @@ $('installApp').onclick = async () => {
   $('installApp').disabled = false;
   setTimeout(loadInfo, 4000);
 };
+// Photo frame: show the fields of the chosen source; the Immich album list is only fetched on request
+let immichAlbums = [];   // the last list the agent sent; the chosen album is shown against it, also after Apply JSON or Revert
+let immichFor = '';      // the address and key that list was loaded with (compared in memory, never put in the page)
+let immichLoadSeq = 0;   // the newest Load albums request: an older answer is dropped
+const immichConnection = () => JSON.stringify([cfg.photos.immichUrl, cfg.photos.immichKey]);
+function renderPhotoSource() {
+  const immich = cfg.photos.source === 'immich';
+  $('photosFolderBox').hidden = immich;
+  $('photosImmichBox').hidden = !immich;
+  // another server (or key) has other albums: the list is kept only for the connection it came from
+  if (immichAlbums.length && immichFor !== immichConnection()) { immichAlbums = []; immichFor = ''; $('photosImmichState').textContent = ''; }
+  fillAlbums(immichAlbums, cfg.photos.immichAlbum, cfg.photos.immichAlbumName);
+}
+function fillAlbums(albums, current, currentName) {
+  const sel = $('photosImmichAlbum');
+  sel.replaceChildren();
+  const add = (value, label) => { const o = document.createElement('option'); o.value = value; o.textContent = label; sel.appendChild(o); };
+  if (!albums.length) add(current || '', current ? (currentName || t('s.js.immichChosen')) : t('s.js.immichLoadFirst'));
+  else {
+    add('', t('s.js.immichChoose'));
+    if (current && !albums.some((a) => a.id === current)) add(current, currentName || t('s.js.immichChosen'));
+    for (const a of albums) add(a.id, `${a.name || t('s.js.immichUntitled')} (${a.count})`);
+  }
+  sel.value = current || '';
+}
+$('photosImmichAlbum').onchange = () => {
+  const o = $('photosImmichAlbum').selectedOptions[0];
+  cfg.photos.immichAlbum = o ? o.value : '';
+  cfg.photos.immichAlbumName = o && o.value ? o.textContent.replace(/ \(\d+\)$/, '') : '';
+  changed();
+};
+$('photosImmichLoad').onclick = async () => {
+  const state = $('photosImmichState');
+  const conn = immichConnection(), seq = ++immichLoadSeq;
+  state.textContent = t('s.js.immichLoading');
+  // the agent gives up on the server after 30 s; this is a little longer, so a lost agent doesn't leave "Loading…" for good
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 35000);
+  try {
+    const r = await (await fetch('/api/immich/albums', { method: 'POST', signal: abort.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: cfg.photos.immichUrl, key: cfg.photos.immichKey }) })).json();
+    if (seq !== immichLoadSeq) return; // a newer request is the one that counts
+    if (conn !== immichConnection()) { state.textContent = ''; return; } // the address or key changed while it was out
+    if (r.error) { state.textContent = r.error; return; }
+    immichAlbums = r.albums;
+    immichFor = conn;
+    fillAlbums(immichAlbums, cfg.photos.immichAlbum, cfg.photos.immichAlbumName);
+    state.textContent = r.albums.length ? t('s.js.immichCount', { n: r.albums.length }) : t('s.js.immichNone');
+  } catch (_) {
+    // only the newest request speaks for the status; if the address or key changed meanwhile, there is nothing to report for it
+    if (seq === immichLoadSeq) state.textContent = conn === immichConnection() ? t('s.js.immichFailed') : '';
+  }
+  finally { clearTimeout(timer); }
+};
 $('haTest').onclick = async () => {
   $('haState').textContent = 'checking…';
   try {
@@ -2244,9 +2343,7 @@ const pageId = (...ids) => ids.find((id) => cfg.pages.some((p) => p.id === id)) 
 const RULE_PRESETS = [
   ['✳️ Claude needs me → AI page', () => ({ name: 'Claude needs me', when: 'session-waiting', then: 'goto', page: pageId('ai', 'work'), whileActive: true })],
   ['🎵 Music plays → music page', () => ({ name: 'Music', when: 'media-playing', match: 'Spotify', then: 'goto', page: pageId('music', 'home'), whileActive: true })],
-  ['🔴 On air while the mic is on', () => (osName === 'macos'
-    ? { name: 'On air', when: 'process-running', match: 'zoom.us|Microsoft Teams|FaceTime', then: 'push', key: 'onair', pushValue: 'On air', whileActive: true }
-    : { name: 'On air', when: 'mic-in-use', then: 'notify', text: '{detail} is using the microphone', level: 'warn', whileActive: false })],
+  ['🔴 On air while the mic is on', () => ({ name: 'On air', when: 'mic-in-use', then: 'notify', text: '{detail} is using the microphone', level: 'warn', whileActive: false })],
   ['📆 In a meeting → on air', () => ({ name: 'In a meeting', when: 'calendar-event', then: 'push', key: 'onair', pushValue: '{detail}', whileActive: true })],
   ['🔥 CPU busy → notification', () => ({ name: 'CPU busy', when: 'cpu-above', value: 90, then: 'notify', text: '{detail} for a while', level: 'warn', whileActive: false })],
   ['🌙 Away → ambient page', () => ({ name: 'Away', when: 'idle', value: 10, then: 'goto', page: pageId('ambient', 'clock', 'calm'), whileActive: true })],
@@ -2263,7 +2360,7 @@ const RULE_PRESETS = [
 let activeRules = [];
 
 function renderRules() {
-  cfg.rules ??= []; cfg.calendars ??= []; cfg.feeds ??= []; cfg.cameras ??= { ffmpeg: '', sources: [] }; cfg.photos ??= { folder: '', subfolders: true }; cfg.console ??= { profiles: [] }; cfg.phones ??= []; cfg.homeAssistant ??= {}; cfg.obs ??= { enabled: false, url: 'ws://127.0.0.1:4455' }; cfg.discord ??= { enabled: false };
+  cfg.rules ??= []; cfg.calendars ??= []; cfg.feeds ??= []; cfg.cameras ??= { ffmpeg: '', sources: [] }; cfg.photos ??= { source: 'folder', folder: '', subfolders: true, immichUrl: '', immichKey: '', immichAlbum: '', immichAlbumName: '' }; cfg.console ??= { profiles: [] }; cfg.phones ??= []; cfg.homeAssistant ??= {}; cfg.obs ??= { enabled: false, url: 'ws://127.0.0.1:4455' }; cfg.discord ??= { enabled: false }; cfg.steam ??= { enabled: false };
   $('rulePresets').replaceChildren(...RULE_PRESETS.map(([label, make]) => h('button', { class: 'btn', onclick: () => {
     cfg.rules.push({ id: '', enabled: true, ...make() });
     renderRules(); changed();
@@ -2597,8 +2694,8 @@ function customIconField(s) {
 }
 
 // What a key does: run a program, press keys, type text or run a macro; plus the on / off (toggle) options.
-const KINDS = () => ({ run: t('s.k.runProgram'), keys: t('s.k.pressKeys'), text: t('s.k.typeText'), macro: t('s.k.runMacro') });
-const kindOf = (s) => (s.cmd === 'builtin:keys' ? 'keys' : s.cmd === 'builtin:text' ? 'text' : s.cmd === 'builtin:macro' ? 'macro' : 'run');
+const KINDS = () => ({ run: t('s.k.runProgram'), keys: t('s.k.pressKeys'), text: t('s.k.typeText'), macro: t('s.k.runMacro'), cycle: t('s.k.cycle') });
+const kindOf = (s) => (s.cmd === 'builtin:keys' ? 'keys' : s.cmd === 'builtin:text' ? 'text' : s.cmd === 'builtin:macro' ? 'macro' : s.cmd === 'builtin:cycle' ? 'cycle' : 'run');
 function actionFields(s, upd, text, cmdIn, preset) {
   const kind = kindOf(s);
   const area = (value, ph, rows, oninput) => h('textarea', { rows, placeholder: ph, spellcheck: 'false', oninput }, value);
@@ -2607,6 +2704,8 @@ function actionFields(s, upd, text, cmdIn, preset) {
       const k = e.target.value;
       s.cmd = k === 'run' ? '' : 'builtin:' + k;
       if (k !== 'macro') delete s.steps;
+      if (k !== 'cycle') delete s.cycle; else s.cycle ??= [];
+      if (k === 'cycle') s.toggle = false;
       s.args = null; s.cwd = null;
       changed(); renderEditor();
     } }, ...Object.entries(KINDS()).map(([k, l]) => h('option', { value: k, selected: k === kind }, l))))];
@@ -2620,16 +2719,28 @@ function actionFields(s, upd, text, cmdIn, preset) {
     fields.push(text('args', t('s.k.keys'), 'e.g. ctrl+shift+m', 'Combine with +, several in a row with commas. Ctrl, Shift, Alt, Win (Cmd on a Mac), letters, digits, F1–F24, enter, tab, esc, space, arrows, home, end, pageup, pagedown, delete, numpad0–numpad9, numpadenter, numpadadd, numpadsubtract, numpadmultiply, numpaddivide, numpaddecimal, playpause, next, prev, mute, volumeup, volumedown.'));
   } else if (kind === 'text') {
     fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.textToType')), area(s.args || '', 'Typed into whatever window has the focus', 3, (e) => upd('args', e.target.value, false))));
+  } else if (kind === 'cycle') {
+    // each tap runs the next key of the list; the key on the phone shows the one that ran last
+    const choices = cfg.shortcuts.filter((o) => o !== s && o.id);
+    const rows = (s.cycle ??= []).map((id, i) => h('div', { class: 'row', style: { alignItems: 'center', gap: '8px', marginBottom: '6px' } },
+      h('span', { class: 'hint' }, (i + 1) + '.'),
+      h('select', { onchange: (e) => { s.cycle[i] = e.target.value; changed(); } },
+        ...choices.map((o) => h('option', { value: o.id, selected: o.id === id }, o.label || o.id))),
+      h('button', { class: 'btn sm', type: 'button', 'aria-label': t('s.k.remove'), onclick: () => { s.cycle.splice(i, 1); changed(); renderEditor(); } }, '×')));
+    fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.cycleKeys')), ...rows,
+      h('button', { class: 'btn sm', type: 'button', disabled: !choices.length || s.cycle.length >= 20, onclick: () => { s.cycle.push(choices[0].id); changed(); renderEditor(); } }, t('s.k.cycleAdd')),
+      h('span', { class: 'hint' }, t('s.k.cycleHint')),
+      ...(s.cycle.length < 2 ? [h('span', { class: 'hint' }, t('s.k.cycleFew'))] : [])));
   } else {
     fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.steps')),
       area((s.steps || []).join('\n'), 'keys:ctrl+c\nwait:200\ntext:Hello\nshortcut:terminal', 6, (e) => upd('steps', e.target.value.split('\n').map((x) => x.trim()).filter(Boolean), false)),
       h('span', { class: 'hint' }, t('s.k.macroHint'))));
   }
-  if (osName === 'macos' && kind !== 'run') fields.push(h('p', { class: 'hint' }, t('s.k.macosPermission')));
-  if (osName === 'linux' && kind !== 'run') fields.push(h('p', { class: 'hint' }, t('s.k.linuxNeedsXdotool')));
+  if (osName === 'macos' && kind !== 'run' && kind !== 'cycle') fields.push(h('p', { class: 'hint' }, t('s.k.macosPermission')));
+  if (osName === 'linux' && kind !== 'run' && kind !== 'cycle') fields.push(h('p', { class: 'hint' }, t('s.k.linuxNeedsXdotool')));
 
   const isMute = s.cmd === 'builtin:mute';
-  fields.push(h('label', { class: 'check', style: { marginTop: '4px' } },
+  if (kind !== 'cycle') fields.push(h('label', { class: 'check', style: { marginTop: '4px' } },
     h('input', { type: 'checkbox', checked: !!s.toggle || isMute, disabled: isMute, onchange: (e) => { s.toggle = e.target.checked; changed(); renderEditor(); } }),
     isMute ? t('s.k.toggleLabelMute') : t('s.k.toggleLabel')));
   if (s.toggle && !isMute) {
@@ -2637,6 +2748,13 @@ function actionFields(s, upd, text, cmdIn, preset) {
       'A value pushed to /api/push/<key> (true / on / 1 = on). Without it the phone shows the state after each tap.'));
     if (kind === 'run') fields.push(text('offCmd', t('s.cd.offCmdPlaceholder'), t('s.cd.offCmdHint')), text('offArgs', t('s.k.offArgs'), ''));
   }
+  // holding the key on the phone runs another key (a key that was never saved has no id to point at yet)
+  const others = cfg.shortcuts.filter((o) => o !== s && o.id);
+  fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.longPress')),
+    h('select', { onchange: (e) => { s.longPress = e.target.value || null; changed(); } },
+      h('option', { value: '' }, t('s.k.longPressNone')),
+      ...others.map((o) => h('option', { value: o.id, selected: o.id === s.longPress }, o.label || o.id))),
+    h('span', { class: 'hint' }, t('s.k.longPressHint'))));
   return fields;
 }
 
@@ -2659,6 +2777,8 @@ function delKey() {
   const s = cfg.shortcuts[selKey];
   if (!confirm(`Delete "${s.label}"?`)) return;
   cfg.shortcuts.splice(selKey, 1);
+  // a key that cycles through the deleted one no longer lists it (the select would otherwise show another key for it)
+  for (const o of cfg.shortcuts) if (Array.isArray(o.cycle)) o.cycle = o.cycle.filter((id) => id !== s.id);
   selKey = Math.max(0, selKey - 1);
   renderDeck(); changed();
 }
@@ -3027,6 +3147,7 @@ function localizeCatalog() {
     w.category = tc(w.category);
     for (const o of w.options || []) {
       if (o.label) o.label = tc(o.label);
+      if (o.section) o.section = tc(o.section);
       for (const c of o.choices || []) if (c[1]) c[1] = tc(c[1]);
     }
   }
@@ -3097,10 +3218,12 @@ function bindForm() {
       $('nbv').textContent = Math.round(cfg.night.brightness * 100) + '%';
       if (p === 'charge.method') renderCharge();
       if (p === 'lan.enabled') renderLanStatus();
+      if (p === 'photos.source' || p === 'photos.immichUrl' || p === 'photos.immichKey') renderPhotoSource();
       changed();
     };
   });
   bindCodexBar();
+  renderPhotoSource();
   $('nbv').textContent = Math.round(cfg.night.brightness * 100) + '%';
 }
 
@@ -3185,11 +3308,18 @@ async function loadInfo() {
     $('restartBtn').hidden = !lan.restartNeeded;
     renderUpdate(await (await fetch('/api/update')).json());
     renderWebhooks(lan);
-    const hk = await (await fetch('/api/claude/hook')).json();
-    $('hookState').textContent = hk.installed ? t('s.claude.installedIn', { path: hk.path }) : t('s.claude.notInstalled');
-    $('hookBtn').dataset.i18n = hk.installed ? 's.claude.removeHook' : 's.claude.installHook';
-    $('hookBtn').textContent = t($('hookBtn').dataset.i18n);
-    $('hookBtn').dataset.installed = hk.installed ? '1' : '';
+    const [claudeHook, codexHook] = await Promise.all([
+      fetch('/api/claude/hook').then((r) => r.json()),
+      fetch('/api/codex/hook').then((r) => r.json()),
+    ]);
+    for (const [name, hk] of [['claude', claudeHook], ['codex', codexHook]]) {
+      $(`${name}HookState`).textContent = hk.installed ? t('s.claude.installedIn', { path: hk.path }) : t('s.claude.notInstalled');
+      const btn = $(`${name}HookBtn`);
+      btn.dataset.i18n = hk.installed ? 's.claude.removeHook' : 's.claude.installHook';
+      btn.textContent = t(btn.dataset.i18n);
+      btn.dataset.installed = hk.installed ? '1' : '';
+    }
+    $('codexHookTrust').style.display = codexHook.installed ? '' : 'none';
     $('info').replaceChildren(
       h('dt', {}, 'Version'), h('dd', {}, i.version),
       h('dt', {}, t('s.adv.settingsFile')), h('dd', {}, h('code', {}, i.configPath)),
@@ -3202,11 +3332,12 @@ async function loadInfo() {
 // The form reads every section it binds and renders, so a config without one — an older export, or a
 // hand-trimmed paste in Apply JSON — gets the same defaults a fresh load does before anything renders.
 function fillDefaults() {
-  cfg.pages = fitPages(cfg.pages); cfg.shortcuts ??= []; cfg.rules ??= []; cfg.display ??= {}; cfg.night = { enabled: true, start: '00:30', end: '07:30', brightness: 0.02, ...cfg.night }; cfg.weather ??= {}; cfg.weather.unit ??= 'celsius'; cfg.weather.model ??= ''; cfg.photos ??= { folder: '', subfolders: true }; cfg.lan ??= { enabled: false, port: 8766 }; cfg.updates ??= { auto: true, repo: 'ersinkoc/phonebox' }; cfg.claude ??= { phoneApprovals: true, timeoutSec: 90, onlyWhenAway: false, shareSessionTitles: false, shareConversation: false };
+  cfg.pages = fitPages(cfg.pages); cfg.shortcuts ??= []; cfg.rules ??= []; cfg.display ??= {}; cfg.night = { enabled: true, start: '00:30', end: '07:30', brightness: 0.02, ...cfg.night }; cfg.weather ??= {}; cfg.weather.unit ??= 'celsius'; cfg.weather.model ??= ''; cfg.photos ??= { source: 'folder', folder: '', subfolders: true, immichUrl: '', immichKey: '', immichAlbum: '', immichAlbumName: '' }; cfg.lan ??= { enabled: false, port: 8766 }; cfg.updates ??= { auto: true, repo: 'ersinkoc/phonebox' }; cfg.claude ??= { phoneApprovals: true, timeoutSec: 90, onlyWhenAway: false, shareSessionTitles: false, shareConversation: false };
   cfg.codexBar ??= { providers: ['claude', 'codex', 'antigravity'], rotate: true, pageSize: 2, rotateInterval: 8 };
-  for (const [k, v] of Object.entries({ language: 'auto', hour12: false, idleReturnSec: 90, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30, keepAwake: true,
+  for (const [k, v] of Object.entries({ language: 'auto', hour12: false, idleReturnSec: 90, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30, keepAwake: true, openOnConnect: true,
     showSeconds: true, vibrate: true, finishToast: true, volumeKeys: true, artTint: true, proximityWake: true, orientation: 'landscape', theme: 'default', accent: '#2dd4bf' })) cfg.display[k] ??= v;
   cfg.charge ??= { enabled: false, min: 50, max: 80, method: 'ha' };
+  cfg.steam ??= { enabled: false };
 }
 
 async function load() {
@@ -3332,11 +3463,13 @@ $('restartBtn').onclick = async () => {
   };
   setTimeout(wait, 1500);
 };
-$('hookBtn').onclick = async () => {
-  const remove = !!$('hookBtn').dataset.installed;
-  const r = await fetch('/api/claude/hook', { method: remove ? 'DELETE' : 'POST' });
+for (const name of ['codex', 'claude']) $(`${name}HookBtn`).onclick = async () => {
+  const btn = $(`${name}HookBtn`), remove = !!btn.dataset.installed;
+  const r = await fetch(`/api/${name}/hook`, { method: remove ? 'DELETE' : 'POST' });
   const j = await r.json().catch(() => ({}));
-  r.ok ? toast(remove ? 'Hook removed' : 'Hook installed — new Claude Code sessions pick it up') : toast(j.error || 'Could not change the hook', true);
+  const successKey = remove ? 's.approvals.hookRemoved' : name === 'codex' ? 's.approvals.codexHookInstalled' : 's.approvals.hookInstalled';
+  r.ok ? toast(t(successKey, { agent: name === 'codex' ? 'Codex' : 'Claude Code' }))
+    : toast(j.error || t('s.approvals.hookError'), true);
   loadInfo();
 };
 $('modalClose').onclick = closeModal;

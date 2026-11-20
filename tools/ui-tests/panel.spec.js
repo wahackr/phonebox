@@ -50,6 +50,11 @@ test('no widget fails to build on any page', async ({ page }) => {
 test('every widget in the catalogue builds and runs without errors', async ({ page }) => {
   test.setTimeout(90_000); // Each catalog page runs its render and polling lifecycle; the catalog now exceeds 100 types.
   const errors = watchErrors(page);
+  await page.route('**/agent/api/steam/avatar?id=*', (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><circle cx=".5" cy=".5" r=".5"/></svg>',
+  }));
   await page.goto('/panel/');
   // one page per widget type, at its default size, through the demo's stored settings
   const count = await page.evaluate(async () => {
@@ -290,6 +295,21 @@ test('a Claude Code permission prompt can be answered', async ({ page }) => {
   const prompt = page.locator('#approval');
   await expect(prompt).toBeVisible();
   await prompt.getByRole('button', { name: 'Allow' }).click();
+  await expect(prompt).toBeHidden();
+});
+
+test('a Codex permission prompt shows the Codex mark, project and working directory', async ({ page }) => {
+  await page.goto('/panel/');
+  await expect(page.locator('.w').first()).toBeVisible();
+  await page.evaluate(() => window.PhoneBoxDemo.ask({ source: 'Codex', project: 'phonebox', cwd: '/Users/me/Desktop/applications/phonebox',
+    tool: 'Run a command', detail: 'npm test', description: 'Run the test suite' }));
+  const prompt = page.locator('#approval');
+  await expect(prompt).toBeVisible();
+  await expect(page.locator('#apLogo')).toHaveText('◎');
+  await expect(page.locator('#apSource')).toHaveText('Codex');
+  await expect(page.locator('#apProject')).toHaveText('phonebox');
+  await expect(page.locator('#apCwd')).toHaveText('/Users/me/Desktop/applications/phonebox');
+  await prompt.getByRole('button', { name: 'Deny' }).click();
   await expect(prompt).toBeHidden();
 });
 

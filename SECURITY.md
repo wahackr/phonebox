@@ -6,5 +6,5 @@ Do not include access tokens, pairing keys, calendar URLs or personal session tr
 
 Security fixes target the latest release. Install the latest agent and Android app together when a fix changes both sides.
 
-PhoneBox can run shortcuts and control local applications. Keep the agent on loopback or its authenticated, pinned-TLS
-Wi-Fi connection. Custom HTML widgets are sandboxed; they must use the documented widget messaging interface.
+PhoneBox can run shortcuts and control local applications. Keep the agent on loopback, its key-checked USB tunnel or its
+authenticated, pinned-TLS Wi-Fi connection. Custom HTML widgets are sandboxed; they must use the documented widget messaging interface.

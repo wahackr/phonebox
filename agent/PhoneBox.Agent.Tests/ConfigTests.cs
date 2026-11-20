@@ -6,6 +6,23 @@ using Xunit;
 /// <summary>Config normalization: templates, the pre-0.6.2 page migration, grid limits, ids and what the phone sees.</summary>
 public class ConfigTests
 {
+    [Fact]
+    public void NullOrMissingSteamApiKeyKeepsStoredKeyButEmptyCanClearIt()
+    {
+        var proposed = JsonSerializer.Deserialize<AgentConfig>("{}", ConfigStore.ReadOpts)!;
+        Assert.True(ConfigStore.PreserveSteamApiKey(proposed, "stored-secret"));
+        Assert.Equal("stored-secret", proposed.Steam.ApiKey);
+
+        proposed = JsonSerializer.Deserialize<AgentConfig>("{\"steam\":{\"apiKey\":null}}", ConfigStore.ReadOpts)!;
+        Assert.True(ConfigStore.PreserveSteamApiKey(proposed, "stored-secret"));
+        Assert.Equal("stored-secret", proposed.Steam.ApiKey);
+
+        proposed.Steam.ApiKey = "";
+        Assert.False(ConfigStore.PreserveSteamApiKey(proposed, "stored-secret"));
+        Assert.Equal("", proposed.Steam.ApiKey);
+        Assert.False(ConfigStore.PreserveSteamApiKey(proposed, null));
+    }
+
     private static AgentConfig Load(string json)
     {
         var path = Path.Combine(Path.GetTempPath(), $"phonebox-cfg-{Guid.NewGuid():N}.json");
@@ -317,6 +334,9 @@ public class LanTests
     [InlineData("/api/feeds/open", true)]
     [InlineData("/api/photos", true)]
     [InlineData("/api/photos/0123456789abcdef", true)]
+    [InlineData("/api/steam", true)]
+    [InlineData("/api/steam/avatar", true)]
+    [InlineData("/api/steam/other", false)]
     [InlineData("/api/push/temperature", true)]
     [InlineData("/api/settings", false)]
     [InlineData("/api/pair", false)]
@@ -329,6 +349,7 @@ public class LanTests
     [InlineData("/api/shortcuts/icon", true)]
     [InlineData("/api/settings/shortcut-icon", false)]
     [InlineData("/api/claude/hook", false)]
+    [InlineData("/api/codex/hook", false)]
     [InlineData("/api/obs-test", false)]
     [InlineData("/api/ha/test", false)]
     [InlineData("/api/phones", false)]
@@ -519,6 +540,8 @@ public class ConfigConcurrencyTests
     [InlineData("\"TR\"", "tr")]       // any case
     [InlineData("\" de \"", "de")]     // stray spaces
     [InlineData("\"vi\"", "vi")]       // added after the list was first written (#177)
+    [InlineData("\"pt-BR\"", "pt-BR")] // distinct from pt; casing must survive the round trip, i18n.js looks it up by exact code
+    [InlineData("\"pt-br\"", "pt-BR")] // any case still normalizes to the canonical pt-BR, not a lowercase copy
     [InlineData("\"xx\"", "auto")]     // a language PhoneBox does not have
     [InlineData("null", "auto")]
     [InlineData("\"\"", "auto")]
@@ -547,7 +570,7 @@ public class ConfigConcurrencyTests
         using var s = AppPaths.Resource("www/i18n.js");
         Assert.NotNull(s);
         var js = new StreamReader(s!).ReadToEnd();
-        var codes = System.Text.RegularExpressions.Regex.Matches(js, @"\{\s*code:\s*'([a-z]{2,3})'").Select(m => m.Groups[1].Value).ToHashSet();
+        var codes = System.Text.RegularExpressions.Regex.Matches(js, @"\{\s*code:\s*'([A-Za-z]{2,3}(?:-[A-Za-z]{2,3})?)'").Select(m => m.Groups[1].Value).ToHashSet();
         Assert.Contains("en", codes);
         Assert.Equal(codes.Order(), DisplayConfig.Languages.Where(l => l != "auto").Order());
     }

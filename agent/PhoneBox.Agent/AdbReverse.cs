@@ -3,10 +3,12 @@ using System.Diagnostics;
 namespace PhoneBox.Agent;
 
 /// <summary>
-/// While a phone is connected over USB, keeps an "adb reverse tcp:8765 tcp:8765" rule in place so that
-/// 127.0.0.1:8765 on the phone reaches this agent. When a phone is newly plugged in, wakes it and opens the panel.
+/// While a phone is connected over USB, keeps an "adb reverse tcp:8765 tcp:&lt;USB port&gt;" rule in place so that
+/// 127.0.0.1:8765 on the phone reaches this agent's USB port, and reads the key the phone's app sends there (see
+/// <see cref="UsbLink"/>). When a phone is newly plugged in, wakes it and opens the panel
+/// (unless Settings › Display › open on connect is off).
 /// </summary>
-public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEndpoint? endpoint = null) : BackgroundService
+public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEndpoint? endpoint = null, UsbLink? usb = null) : BackgroundService
 {
     public const string PanelActivity = "net.oxog.phonebox.deskpanel/.MainActivity";
     private const string HomeAlias = "net.oxog.phonebox.deskpanel/.HomeAlias";
@@ -17,7 +19,12 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
     /// <summary>Connected phones that do not have the PhoneBox app yet (installed from Settings, e.g. after winget / Scoop).</summary>
     public string[] MissingApp => _missingApp;
     private const string Rule = "tcp:8765";
-    private string TargetRule => $"tcp:{endpoint?.Port ?? 8765}";
+    private string TargetRule => $"tcp:{usb?.Port ?? endpoint?.Port ?? 8765}";
+    private readonly Dictionary<string, long> _keyTriedAt = []; // serial -> when its key was last asked for (Ensure only)
+    private readonly HashSet<string> _oldApp = [];              // phones already told that their app is too old
+    internal const long KeyRetryMs = 30_000;
+    // asked again now and then even when known: an app whose data was cleared has a new key and no pin, and can't say so
+    internal const long KeyRefreshMs = 120_000;
 
     private string _lastState = "";
     private volatile string[] _devices = [];
@@ -120,6 +127,11 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         devices = devices.Where(s => string.IsNullOrEmpty(serial) || s == serial).ToArray();
 
         SetDevices(devices);
+        usb?.Retain(devices);
+        foreach (var gone in _keyTriedAt.Keys.Except(devices).ToList()) _keyTriedAt.Remove(gone); // plugged in again: ask at once
+        _oldApp.IntersectWith(devices);
+        // a request came with a key the agent doesn't know (the app was reinstalled, its data cleared): ask again
+        var refreshKeys = usb?.TakeUnknownKey() ?? false;
         var problem = UsbProblem;
         if (problem != _lastProblem)
         {
@@ -144,24 +156,31 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
                 continue;
             }
             var ruled = HasOwnRule(list);
-            if (ruled && !_missingApp.Contains(d)) continue;
+            var keyed = usb is null || KeyAskedRecently(d, usb.HasKey(d) && !refreshKeys ? KeyRefreshMs : KeyRetryMs);
+            if (ruled && keyed && !_missingApp.Contains(d)) continue;
             // is the app there at all? (the agent may have been installed on its own, with winget or Scoop)
             var installed = (await Adb(adb, $"-s {d} shell pm path net.oxog.phonebox.deskpanel", ct, anyExit: true)).Contains("package:");
             _missingApp = installed ? _missingApp.Where(x => x != d).ToArray() : _missingApp.Union([d]).ToArray();
             if (!installed) { Report($"{d}: the PhoneBox app is not installed (Settings › General › Install the phone app)"); continue; }
+            if (!keyed) await ReadKeyAsync(adb, d, ct);
             if (ruled) continue;
+            // the phone had a rule already: this agent restarted (its USB port changed), the phone was not plugged in now
+            var restarted = HasAnyRule(list);
             await Adb(adb, $"-s {d} reverse {Rule} {TargetRule}", ct);
+            if (restarted) { log.LogInformation("{Device}: adb reverse moved to this agent", d); continue; }
             // A newly plugged-in phone must not light up while the computer is locked.
             if (cfg.Get().Display.FollowComputerLock && OperatingSystem.IsMacOS())
             {
                 await SyncSessionAsync(ct, force: true);
             }
-            else
+            else if (cfg.Get().Display.OpenOnConnect)
             {
                 await Adb(adb, $"-s {d} shell input keyevent KEYCODE_WAKEUP", ct);
                 await Adb(adb, $"-s {d} shell am start -n {PanelActivity}", ct);
                 log.LogInformation("{Device}: adb reverse set up, panel opened", d);
             }
+            // Settings › Display › open on connect is off: the phone stays as it is (the panel opens when the user starts it).
+            else log.LogInformation("{Device}: adb reverse set up", d);
         }
         // Settings › Display › home screen: the app offers itself as a home app; make it the default one (no root needed).
         if (cfg.Get().Display.HomeScreen)
@@ -193,6 +212,41 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         else _awakeSet.Clear();
         Report($"phone connected: {Devices}");
     }
+
+    /// <summary>
+    /// Reads the phone app's USB key and gives the app this agent's certificate fingerprint (see <see cref="UsbLink"/>),
+    /// once the key provider is known to be the app's own. An app from before the key has no provider: it can't use
+    /// USB until it is updated, which the settings page offers once it knows the app's version.
+    /// </summary>
+    private async Task ReadKeyAsync(string adb, string d, CancellationToken ct)
+    {
+        if (usb is null) return;
+        _keyTriedAt[d] = Environment.TickCount64;
+        var dump = await Adb(adb, $"-s {d} shell dumpsys package {UsbLink.Package}", ct, anyExit: true);
+        var key = UsbLink.OwnsKeyProvider(dump)
+            ? UsbLink.ParseKey(await Adb(adb, $"-s {d} shell content query --uri {UsbLink.KeyUri}", ct, anyExit: true))
+            : null;
+        if (key is not null)
+        {
+            await Adb(adb, $"-s {d} shell content insert --uri {UsbLink.PinUri} --bind fp:s:{usb.Pin}", ct, anyExit: true);
+            usb.SetKey(d, key);
+            _oldApp.Remove(d);
+            return;
+        }
+        usb.Forget(d);
+        if (!_oldApp.Add(d)) return;
+        log.LogWarning("{Device}: the PhoneBox app on the phone is too old for this agent's USB connection; update it from the settings page", d);
+        // it can't report its version over USB any more, so the update check takes it from here
+        if (UsbLink.ParseVersionName(dump) is { } version) UpdateService.AppVersion ??= version;
+    }
+
+    private bool KeyAskedRecently(string d, long window) =>
+        _keyTriedAt.TryGetValue(d, out var at) && Environment.TickCount64 - at < window;
+
+    /// <summary>True when "reverse --list" has any rule for the phone's tcp:8765, whatever it points at.</summary>
+    internal static bool HasAnyRule(string list) => list.Split('\n')
+        .Select(l => l.Split([' ', '\t', '\r'], StringSplitOptions.RemoveEmptyEntries))
+        .Any(p => p.Length >= 2 && p[^2] == Rule);
 
     /// <summary>
     /// True when "reverse --list" has this agent's rule: phone tcp:8765 to this agent's port. A rule left by an agent on

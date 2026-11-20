@@ -40,8 +40,47 @@ public sealed class MediaMonitor(ILogger<MediaMonitor> log) : BackgroundService
     private string _macSource = "";
     private DateTimeOffset _macSourceAt;
 
+    // Every reading starts nowplaying-cli or playerctl (and osascript when nothing is in Now Playing), and on macOS .NET
+    // forks the whole agent to start each one. A panel on screen asks for the snapshot every second (the live stream's
+    // state), and so does a "media-playing" rule while one exists. With nobody asking (the phone's screen is off, it is
+    // unplugged, no panel is open) a reading every IdlePoll is enough, and the first request after that reads at once.
+    internal static readonly TimeSpan ActivePoll = TimeSpan.FromSeconds(1);
+    internal static readonly TimeSpan IdlePoll = TimeSpan.FromSeconds(10);
+    internal const long WantedForMs = 15_000;
+    private long _lastRequest = -WantedForMs; // nobody has asked yet
+    // when the last reading finished; a control acts on that reading, so it reads again first when this is old
+    private long _lastReading = long.MinValue / 2;
+    internal const long FreshForMs = 2_000;
+    private readonly SemaphoreSlim _wake = new(0, 1);
+
     public AlbumArt? Art { get; private set; }
-    public MediaSnapshot? Snapshot() => _snap;
+
+    public MediaSnapshot? Snapshot()
+    {
+        var now = Environment.TickCount64;
+        if (IsIdle(Interlocked.Exchange(ref _lastRequest, now), now)) Wake();
+        return _snap;
+    }
+
+    internal static bool IsIdle(long lastRequest, long now) => now - lastRequest >= WantedForMs;
+    internal static bool IsStale(long lastReading, long now) => now - lastReading > FreshForMs;
+    private bool Idle => IsIdle(Interlocked.Read(ref _lastRequest), Environment.TickCount64);
+
+    /// <summary>A request came back after a quiet spell and the next reading will not wait out IdlePoll.</summary>
+    internal bool ReadingDue => _wake.CurrentCount > 0;
+
+    private void Wake() { try { _wake.Release(); } catch (SemaphoreFullException) { } }
+
+    /// <summary>
+    /// While nobody watches, the last reading can be up to IdlePoll old: read again before acting on it. Keyed on the
+    /// reading, not the last request, because the phone's /api/media asks for the snapshot just before it acts.
+    /// </summary>
+    private async Task RefreshIfIdle()
+    {
+        if (!IsStale(Interlocked.Read(ref _lastReading), Environment.TickCount64)) return;
+        try { await Poll(onlyIfStale: true); }
+        catch (Exception ex) { log.LogDebug("media: {Msg}", ex.Message); }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -49,14 +88,18 @@ public sealed class MediaMonitor(ILogger<MediaMonitor> log) : BackgroundService
         {
             try { await Poll(); }
             catch (Exception ex) { log.LogDebug("media: {Msg}", ex.Message); _snap = null; }
-            await Task.Delay(1000, ct);
+            await _wake.WaitAsync(Idle ? IdlePoll : ActivePoll, ct);
         }
     }
 
-    private async Task Poll()
+    private async Task Poll(bool onlyIfStale = false)
     {
         await _pollGate.WaitAsync();
+        // a control that waited here for the loop's own reading uses that one instead of starting the tools again
+        if (onlyIfStale && !IsStale(Interlocked.Read(ref _lastReading), Environment.TickCount64)) { _pollGate.Release(); return; }
         var before = _snap;
+        // fresh from when the players were asked, not from when the artwork finished loading
+        var asked = Environment.TickCount64;
         try
         {
             var (snap, art) = OperatingSystem.IsMacOS() ? ReadMac() : ReadLinux();
@@ -81,6 +124,7 @@ public sealed class MediaMonitor(ILogger<MediaMonitor> log) : BackgroundService
         }
         finally
         {
+            Interlocked.Exchange(ref _lastReading, asked);
             _pollGate.Release();
             // a new track, a pause or a seek reaches the phone now, not at its next whole-second state
             if (StateSignal.MediaChanged(before, _snap)) StateSignal.Poke();
@@ -465,6 +509,7 @@ public sealed class MediaMonitor(ILogger<MediaMonitor> log) : BackgroundService
 
     public async Task<bool> Control(string action, long? ms)
     {
+        await RefreshIfIdle(); // which player to ask comes from the last reading
         bool ok;
         if (OperatingSystem.IsMacOS())
         {
@@ -517,6 +562,7 @@ public sealed class MediaMonitor(ILogger<MediaMonitor> log) : BackgroundService
 
     public async Task<bool> PauseAsync()
     {
+        await RefreshIfIdle();
         var snap = _snap;
         if (snap is not { Playing: true }) return false;
         bool ok;

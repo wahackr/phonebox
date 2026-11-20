@@ -4,7 +4,7 @@ PhoneBox has no accounts, no servers of its own, no telemetry, no analytics and 
 receives any data from you. This page lists every place the agent (on your computer) and the Android app (on your
 phone) connect to, so you can see exactly what leaves your machine and turn it off.
 
-Last updated: 2026-11-15 (PhoneBox 0.9.6).
+Last updated: 2026-11-20 (PhoneBox 0.9.6).
 
 ## What stays on your devices
 
@@ -13,17 +13,23 @@ Last updated: 2026-11-15 (PhoneBox 0.9.6).
   On macOS and Linux these files are readable only by your user (0600).
 - **Discord login**: if you use the Discord widget, `discord-token.json` next to `config.json` holds the access and
   refresh token Discord gave PhoneBox (on macOS and Linux readable only by your user).
+- **Steam key**: the SteamID64 and Web API key are stored in `config.json` on this computer. A custom profile name is
+  sent to Steam once when you save it, then only the SteamID64 is stored. The key is never sent to the phone or logged.
+  The activity widget derives its short history from successive polls in memory; it is not written to disk or logged and
+  starts empty after an agent restart.
 - **Last Claude quota reading**: `claude-quota.json` next to the log (usage percentages and reset times, no token),
   so the panel can show the last values after a restart, and `claude-quota-schedule.json` (when the next check may
   run, the last error message and, after Anthropic refused a token, a 16-character hash of that token, never the token
   itself), so a restart doesn't ask Anthropic again sooner than it should.
 - **Log**: `agent.log` in `%LOCALAPPDATA%\PhoneBox` (Windows), `~/.local/share/PhoneBox` (Linux) or
   `~/Library/Application Support/PhoneBox` (macOS).
-- **Phone app**: caches (weather, rates, widget state) in its own app storage. The app asks for `INTERNET` and
-  `VIBRATE`, and for the microphone (`RECORD_AUDIO`) only when a Dictation widget's button is tapped for the first time.
+- **Phone app**: caches (weather, rates, widget state) in its own app storage. The app asks for `INTERNET`,
+  `VIBRATE` and `ACCESS_NETWORK_STATE` (only to tell which network is Wi-Fi when the Wake button sends its packet; Android
+  grants it without a prompt), and for the microphone (`RECORD_AUDIO`) only when a Dictation widget's button is tapped for
+  the first time.
 - **Computer data shown on the panel** (CPU, GPU, memory, disks, processes, media, volume, AI coding sessions and
   quotas, Docker / Podman, OBS) is read locally and goes only to your phone: over the USB cable (`adb reverse` to
-  `127.0.0.1`) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. On Linux, an Intel GPU's
+  `127.0.0.1`, with a key only the PhoneBox app has) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. On Linux, an Intel GPU's
   load comes from the GPU usage counters in other processes' `/proc/<pid>/fdinfo` (the counters only, nothing those
   programs draw or compute); processes of other users are read only when Linux allows the agent to read them (normally
   as root or with `CAP_SYS_PTRACE`).
@@ -53,6 +59,10 @@ Last updated: 2026-11-15 (PhoneBox 0.9.6).
   on your computer (over USB or pinned-TLS Wi-Fi) to control the cursor and scroll. No mouse or gesture data is ever
   recorded, stored or sent outside your local connection. It is active only while an enabled page contains the Trackpad
   widget with **Allow controlling the mouse from the phone** enabled (off by default).
+  On a Mac, a three-, four- or five-finger gesture from the phone opens Mission Control or Apps, signals the Dock, or
+  presses a key (moving between desktops or pages). While you gesture, the agent reads the Mac's Trackpad, `com.apple.dock`
+  and `com.apple.symbolichotkeys` preferences (at most once every 2 seconds) to do what your own trackpad would do. Only
+  the gesture settings are kept, in memory, and nothing is stored or sent.
 - **Local services**: LibreHardwareMonitor's web server (`127.0.0.1:8085`), a running Antigravity language server
   (loopback, over HTTP or HTTPS), the Docker / Podman socket, OBS WebSocket and the Discord desktop app's local connection (a named pipe
   or socket on this computer) are local connections.
@@ -80,7 +90,10 @@ identifies your GitHub account to GitHub.
 
 | Feature | Where | What is sent |
 |---|---|---|
+| Codex live quota (opt-in) | Off by default until turned on in **Settings › General › AI quotas & CodexBar › Read live Codex quotas with the Codex CLI**, and only while an enabled page shows Codex quotas and fresh CodexBar data is not already active. Runs the local `codex` CLI (`codex app-server`), which contacts its configured OpenAI/ChatGPT endpoints (by default `chatgpt.com` / `api.openai.com`) about every 3 minutes, backing off up to 30 minutes on failure. Turn off by unchecking **Read live Codex quotas with the Codex CLI** | PhoneBox sends only `initialize` metadata and `account/rateLimits/read` over local stdio (no prompt or thread) and never reads or logs credentials; the Codex CLI uses its own sign-in and may refresh and rewrite `~/.codex/auth.json` |
 | Discord widget | `discord.com/api/oauth2/token`, once at login and when the token needs renewing; `cdn.discordapp.com`, once per server icon and avatar shown (the agent fetches them, the phone never contacts Discord; the rest goes through the Discord app on this PC, locally). Turn off in **Settings › General › Discord** | The application's client ID and secret, and the one-time login code or the saved refresh token; for images only the image's id and hash, which Discord already knows |
+| Steam friends and activity | `api.steampowered.com`, only while Steam is enabled and an enabled page contains either widget. Clear the API key, turn off Steam, or remove both widgets to stop requests | The API key in the request header; your SteamID64 for the friend-list request; your custom profile name as `vanityurl` only when you save it; and friend SteamIDs in player-summary batches. Steam returns names, avatars, presence and public game details. The activity list is built from successive polls and stays in memory only |
+| Steam avatars | `*.steamstatic.com` and `steamcdn-a.akamaihd.net`, only when the agent fetches an avatar shown by either widget. Clear the API key, turn off Steam, or remove both widgets to stop requests | A request to the avatar URL Steam returned (including its image hash); the Web API key and SteamID64 are not sent to these image hosts |
 | GitHub widget | `api.github.com`, through your own GitHub CLI (`gh`) | Whatever `gh` sends with its own sign-in |
 | Hacker News widget (phone) | `hacker-news.firebaseio.com` | Nothing but the request |
 | Exchange rates widget (phone) | `api.frankfurter.dev` | The currencies you chose |
@@ -94,9 +107,11 @@ identifies your GitHub account to GitHub.
 | App console widget | Nothing. On Windows the agent reads the process name of the focused window to pick the matching app profile; that name stays on the computer, and the phone only gets the profile's name and key labels (a key without a label shows its keys, such as ctrl+z). With the widget's **Send keys to the computer** option on (off by default), a tap sends the profile's id and the key's slot, and the agent presses the keys only if the app in front still matches that profile | Nothing |
 | News feeds widget | The RSS and Atom addresses you add in **Settings › General**, fetched by the agent at most every 15 minutes and only while a page shows the widget; the phone never contacts the feed sites. With the widget's **Open articles on the PC** option on (off by default), tapping a headline opens its article in the computer's browser. Turn the requests off by removing the feeds in **Settings › General › News feeds**, or the widget from your pages | The request to that address, with the feed's last `ETag` / `Last-Modified` so an unchanged feed is not sent again |
 | Home Assistant | Your Home Assistant server | The access token you enter |
+| Wake-on-LAN | Your own network only: a UDP broadcast (port 9) to the machine's MAC address, sent only when you press a *wake a computer* key, or the phone's **Wake the PC** button while the paired computer is unreachable | The magic packet, which holds the MAC address you entered (or, for the button, the paired computer's own MAC addresses); nothing leaves your local network (a broadcast address you add must be one of this computer's own networks' or `255.255.255.255`). The paired computer's MAC addresses are kept on the phone next to its pairing details, and the button sends only on a network the computer is on (the phone's network must hold one of the computer's addresses) |
 | Image widget | The image address you enter | The request to that address |
 | Camera widget | The RTSP cameras you add in **Settings › General › Cameras**, pulled by ffmpeg on this computer only while an enabled page shows a Camera widget for them, and stopped a few seconds after it leaves the screen. The phone gets JPEG pictures (5 a second by default, 1 to 10 per camera) over USB or the paired Wi-Fi link and never contacts the camera. The addresses, with the user names and passwords in them, stay in `config.json` and never go to the phone, but while a camera runs its address is visible in this computer's process list (ffmpeg's command line). The pictures are not stored, and the log names the camera, never its address | The camera's own RTSP login and stream requests |
 | Photo frame widget | Nothing outside your network: the photos in the folder you choose in **Settings › General** go from the agent to the phone over USB or the paired Wi-Fi link (on Windows and macOS large JPEG and PNG photos are scaled down first), one at a time and only while an enabled page shows the widget. Clearing the folder setting or removing the widget stops it, and clearing the folder also deletes the scaled copies. Photos that are only in the cloud (OneDrive Files On-Demand and the like) are skipped, so nothing is downloaded for the slideshow | Nothing |
+| Photo frame widget, Immich source | The Immich server address you enter in **Settings › General › Photo frame** (off by default: the source is a folder until you choose **An Immich album**). The agent fetches the album's list at most every five minutes and each photo's preview-size picture as the slideshow shows it, only while an enabled page shows the widget; the phone never contacts the server and never sees its address, the key or Immich's asset ids. Redirects are not followed. The albums list in settings is requested only when you press **Load albums**. Turn it off by switching **Photos from** back to **A folder on this computer** or by removing the widget | The API key you enter (in an `x-api-key` header) and the requests for the album and its pictures. The address and key stay in `config.json` on this computer |
 | Album art on Linux | The artwork address your music player reports | The request to that address |
 | OSC controls (Control Deck) | The OSC host and port you configure, over UDP | The control value |
 | Antigravity quota through its CLI | Whatever the Antigravity CLI contacts with its own sign-in (PhoneBox only starts it) | Decided by the CLI |

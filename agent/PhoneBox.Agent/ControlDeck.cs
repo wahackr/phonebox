@@ -74,6 +74,37 @@ public sealed partial class ControlDeck : BackgroundService
             return _audio = _native.Audio();
         }
     }
+    private DeckAudio AudioForPhone()
+    {
+        var audio = Audio();
+        if (!audio.Available || audio.Sessions.Count == 0) return audio;
+        var defaultOutput = audio.Defaults?.GetValueOrDefault("output:1");
+        var sessions = audio.Sessions
+            .Where(s => s.Active || s.Pid == 0)
+            .GroupBy(ApplicationKey, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var representative = group.FirstOrDefault(s => s.DeviceId == defaultOutput) ?? group.First();
+                return representative with
+                {
+                    Id = "application:" + group.Key,
+                    Peak = group.Max(s => s.Peak),
+                };
+            })
+            .ToArray();
+        return audio with { Sessions = sessions };
+    }
+    private static string ApplicationKey(DeckSession session)
+    {
+        var name = session.Name.Trim();
+        if (name.Length == 0 || name.Equals("Application", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(session.ProcessName))
+            return "session:" + session.Id;
+        return name.ToLowerInvariant();
+    }
+    private static bool MatchesApplication(DeckSession session, string value) =>
+        ApplicationKey(session).Equals(value, StringComparison.OrdinalIgnoreCase)
+        || session.Name.Equals(value, StringComparison.OrdinalIgnoreCase)
+        || session.ProcessName?.Equals(value, StringComparison.OrdinalIgnoreCase) == true;
     private void Invalidate() { lock (_state) _audio = null; }
 
     private bool TryMute(string id)
@@ -101,7 +132,7 @@ public sealed partial class ControlDeck : BackgroundService
         lock (_state) sleep = _sleep.Select(p => (object)new { id = p.Key, at = p.Value }).ToArray();
         return new
         {
-            platform = AppPaths.Os, audio = Audio(), media, mediaError,
+            platform = AppPaths.Os, audio = AudioForPhone(), media, mediaError,
             monitors = _monitors, powerPlans = _plans, midi = _midi, hardwareLoading = _hardwareJob?.IsCompleted == false,
             actions = c.Controls.Actions.Where(a => a.Enabled).Select(Describe).ToArray(),
             shortcuts = c.Shortcuts.Select(DescribeShortcut),
@@ -134,7 +165,7 @@ public sealed partial class ControlDeck : BackgroundService
         return new DeckProfile { Id = "profile-" + Guid.NewGuid().ToString("N")[..12], Label = "Audio profile",
             Defaults = audio.Defaults?.ToDictionary(p => p.Key, p => p.Value) ?? [],
             Levels = audio.Devices.Where(d => d.CanControl).Select(d => new DeckLevel("device", d.Id, d.Volume, d.Muted))
-                .Concat(audio.Sessions.GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase).Select(g => new DeckLevel("application", g.Key, g.First().Volume, g.First().Muted))).ToList() };
+                .Concat(audio.Sessions.GroupBy(ApplicationKey, StringComparer.Ordinal).Select(g => new DeckLevel("application", g.Key, g.First().Volume, g.First().Muted))).ToList() };
     }
 
     public string TaskOutput(string id) => _tasks.Output(id);
@@ -165,7 +196,19 @@ public sealed partial class ControlDeck : BackgroundService
                     ok = _native.Device(id, value, muted, op is "left" ? 0 : op is "right" ? 1 : null); break;
                 case "session":
                     if (value is null && muted is null) return new(false, "Choose a volume or mute state");
-                    if (!Audio().Sessions.Any(s => s.Id == id) || value is < 0 or > 100) return new(false, "Application audio session ended");
+                    if (value is < 0 or > 100) return new(false, "Choose a valid volume");
+                    if (id.StartsWith("application:", StringComparison.Ordinal))
+                    {
+                        var applicationName = id["application:".Length..];
+                        var sessions = Audio().Sessions
+                            .Where(s => MatchesApplication(s, applicationName)).ToArray();
+                        if (sessions.Length == 0) return new(false, "Application audio session ended");
+                        ok = true;
+                        foreach (var session in sessions)
+                            ok = _native.Session(session.Id, value, muted) && ok;
+                        break;
+                    }
+                    if (!Audio().Sessions.Any(s => s.Id == id)) return new(false, "Application audio session ended");
                     ok = _native.Session(id, value, muted); break;
                 case "default":
                     if (op is not ("" or "all" or "media" or "communications" or "console")) return new(false, "Unknown audio role");
@@ -270,7 +313,7 @@ public sealed partial class ControlDeck : BackgroundService
             {
                 if (level.Kind == "application")
                 {
-                    foreach (var session in before.Sessions.Where(s => string.Equals(s.Name, level.Id, StringComparison.OrdinalIgnoreCase)))
+                    foreach (var session in before.Sessions.Where(s => MatchesApplication(s, level.Id)))
                         if (!_native.Session(session.Id, level.Volume, level.Muted)) return new(false, "An application level could not be restored");
                     continue;
                 }

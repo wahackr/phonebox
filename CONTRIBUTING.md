@@ -15,7 +15,9 @@ page lists what reviews keep asking for; following it gets a pull request merged
 
 ## The security model, in short
 
-- The agent listens on `127.0.0.1` (the phone reaches it through `adb reverse`). The optional Wi-Fi port serves only
+- The agent listens on `127.0.0.1`. The phone's `adb reverse` tunnel ends on a loopback port of its own
+  (`agent/PhoneBox.Agent/UsbLink.cs`): TLS pinned by the app, the app's USB key, and the same allow-list as Wi-Fi
+  plus the pairing data and the feed proxy. The optional Wi-Fi port serves only
   the paths on the allow-list in `agent/PhoneBox.Agent/Lan.cs`, over TLS pinned to the paired certificate, with the
   paired key. Settings, pairing and tests stay local. **Adding a path to that allow-list is a security decision**:
   say in the pull request why the phone needs it.

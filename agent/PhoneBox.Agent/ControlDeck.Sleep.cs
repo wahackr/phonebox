@@ -34,7 +34,8 @@ public sealed partial class ControlDeck
                 {
                     if (!_sleep.TryGetValue(player, out var current) || current != deadline) continue;
                     if (!_fades.TryGetValue(player, out var saved)) _fades[player] = saved = [];
-                    foreach (var session in _native.Audio().Sessions.Where(s => PlayerSessionMatches(player, s.Name)))
+                    foreach (var session in _native.Audio().Sessions.Where(s => PlayerSessionMatches(player, s.Name)
+                        || s.ProcessName is { Length: > 0 } process && PlayerSessionMatches(player, process)))
                     {
                         if (_duck.Remove(session.Id, out var ducked) && session.Volume == ducked.Applied)
                         {

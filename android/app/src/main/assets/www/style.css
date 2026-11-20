@@ -181,6 +181,14 @@ body.night #pagePauseOverlay { display: none; }
   font-size: 11.5px; padding: 3px 10px; border-radius: 99px; background: rgba(239, 68, 68, .18); color: #fca5a5;
 }
 body.offline #offline { display: flex; align-items: center; gap: 5px; }
+/* Wake-on-LAN: under the offline pill, only while the PC is unreachable (main.js shows it when the app can wake it) */
+#wake { position: fixed; top: 38px; right: var(--pad-r); z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 280px; }
+#wake[hidden] { display: none; }
+#wake button { min-height: 44px; padding: 0 18px; border-radius: 99px; border: 1px solid rgba(255, 255, 255, .2); background: rgba(255, 255, 255, .1); color: var(--text); font-size: 14px; font-weight: 600; }
+#wake button:disabled { opacity: .6; }
+/* opaque backing: the note is the one message that says what to check, and it can sit over the media widget's own text */
+#wake .note { font-size: 12px; color: var(--text); text-align: left; padding: 8px 12px; border-radius: 12px; background: rgba(24, 24, 28, .96); border: 1px solid rgba(255, 255, 255, .16); }
+#wake .note:empty { display: none; }
 .ico { width: 1em; height: 1em; vertical-align: -0.15em; flex: none; }
 .ico.m { margin-right: .35em; }
 
@@ -831,6 +839,30 @@ html.beat-4 .obs-pill.on .obs-led { box-shadow: 0 0 34px rgba(239, 68, 68, .9); 
 .dc-note { display: flex; flex-direction: column; font-size: 12px; padding: 4px 8px; border-left: 3px solid #5865f2; background: rgba(255, 255, 255, .04); border-radius: 6px; }
 .dc-note span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-discord { padding: 9px 10px; display: flex; flex-direction: column; gap: 8px; }
+.w-steam { padding: 9px 12px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.w-steam .w-title { color: #79a9e8; }
+.st-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.st-count { color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.st-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; scrollbar-width: none; }
+.st-list::-webkit-scrollbar { display: none; }
+.st-row { display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 9px; padding: 4px 6px; border-radius: 8px; font-size: 13px; }
+.st-portrait { width: 34px; height: 34px; border-radius: 50%; position: relative; display: grid; place-items: center; overflow: visible; background: rgba(255,255,255,.08); }
+.st-avatar, .st-avatar-fallback { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: rgba(255,255,255,.08); color: #c7d5e0; font-size: 14px; font-weight: 700; }
+.st-dot { position: absolute; right: -1px; bottom: -1px; width: 9px; height: 9px; border: 2px solid var(--bg); box-sizing: border-box; border-radius: 50%; background: #4b5563; }
+.st-row.state-1 .st-dot, .st-event .st-dot.state-1 { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, .5); }
+.st-row.state-2 .st-dot, .st-event .st-dot.state-2 { background: #ef4444; }
+.st-row.state-3 .st-dot, .st-row.state-4 .st-dot, .st-event .st-dot.state-3, .st-event .st-dot.state-4 { background: #f59e0b; }
+.st-row.state-5 .st-dot, .st-row.state-6 .st-dot, .st-event .st-dot.state-5, .st-event .st-dot.state-6 { background: #60a5fa; }
+.st-row:not(.online) { color: var(--muted); opacity: .82; }
+.st-info { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.st-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-row.online .st-sub { color: #9baec7; }
+.st-activity-list { gap: 5px; }
+.st-event { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 5px; border-radius: 8px; background: rgba(255,255,255,.025); }
+.st-event .st-portrait, .st-event .st-avatar, .st-event .st-avatar-fallback { width: 30px; height: 30px; }
+.st-time { color: var(--dim); font-size: 10px; white-space: nowrap; }
+.st-error { color: #f59e0b; font-size: 11px; line-height: 1.3; }
 .w-ha { padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; }
 .w-ha .w-title { color: #41bdf5; }
 .ha-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); grid-auto-rows: minmax(64px, 1fr); gap: 6px; overflow: hidden; }
@@ -1000,8 +1032,13 @@ html.beat-4 .w-onair.on .oa-sign { box-shadow: 0 0 34px rgba(239, 68, 68, .9); }
 }
 .ap-head { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
 .ap-logo { color: #d97757; font-size: 16px; }
+.ap-logo.codex { color: #67e8f9; }
+.ap-logo.claude { color: #d97757; }
 .ap-sep { color: var(--dim); }
-#apProject { color: var(--text); font-weight: 600; }
+.ap-context { min-width: 0; display: flex; align-items: baseline; gap: 7px; font-size: 12px; color: var(--muted); }
+#apProject { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 650; }
+#apCwd { flex: 1 1 0; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; color: var(--muted); font: 11.5px/1.3 "Roboto Mono", monospace; white-space: normal; overflow-wrap: anywhere; }
+#apCwd:empty { display: none; }
 .ap-count:empty { display: none; }
 .ap-count { margin-left: auto; font-size: 12px; padding: 2px 8px; border-radius: 8px; background: rgba(255, 255, 255, .08); }
 .ap-tool { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }

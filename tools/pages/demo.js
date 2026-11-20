@@ -61,7 +61,7 @@
       night: { enabled: false, start: '00:30', end: '07:30', brightness: 0.02 },
       display: { appearance: null, showSeconds: true, hour12: false, idleReturnSec: 0, vibrate: true, volumeKeys: true, orientation: 'landscape', theme: 'default', accent: '#2dd4bf',
         pixelShift: false, idleDimMin: 0,
-        artTint: true, autoBrightness: false, nightWhenDark: false, proximityWake: true, pin: false, homeScreen: false, keepAwake: true, followComputerLock: false,
+        artTint: true, autoBrightness: false, nightWhenDark: false, proximityWake: true, pin: false, homeScreen: false, keepAwake: true, openOnConnect: true, followComputerLock: false,
         homePage: null, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30 },
       lan: { enabled: true, port: 8766, token: 'demo', webhookToken: 'demo-webhook-key' },
       updates: { auto: true, repo: 'ersinkoc/phonebox' },
@@ -94,6 +94,7 @@
   async function config() {
     const c = await loadConfig();
     muteKeys = (c.shortcuts || []).filter((x) => x.cmd === 'builtin:mute').map((x) => x.id);
+    cycleLists = Object.fromEntries((c.shortcuts || []).filter((x) => x.cmd === 'builtin:cycle').map((x) => [x.id, JSON.stringify(x.cycle || [])]));
     return c;
   }
   const cfgVersion = () => store.get('pb-demo-version', 1);
@@ -115,7 +116,7 @@
       // iconRev / iconUpload: the agent sets them when a shortcut has a picture (and when the user uploaded it). The demo
       // has no uploads and serves no /agent/api/shortcuts/icon, so a config that sets them also needs that image mocked
       // (see button-cover.spec.js); without one the key keeps its emoji.
-      shortcuts: (c.shortcuts || []).map(({ id, label, icon, color, toggle, cmd, iconRev, iconUpload }) => ({ id, label, icon, color, toggle: !!toggle || cmd === 'builtin:mute', iconRev: iconRev ?? null, iconUpload: iconUpload === true })),
+      shortcuts: (c.shortcuts || []).map(({ id, label, icon, color, toggle, cmd, longPress, cycle, iconRev, iconUpload }) => ({ id, label, icon, color, toggle: !!toggle || cmd === 'builtin:mute', cycle: cmd === 'builtin:cycle' && (cycle || []).length > 0, hold: !!longPress && longPress !== id && (c.shortcuts || []).some((x) => x.id === longPress), iconRev: iconRev ?? null, iconUpload: iconUpload === true })),
       rules: (c.rules || []).map(({ id, name, enabled, when }) => ({ id, name, enabled: enabled !== false, when })),
       charge: { enabled: !!c.charge?.enabled, min: c.charge?.min ?? 50, max: c.charge?.max ?? 80 },
     };
@@ -145,7 +146,7 @@
   let phoneBattery = { level: 72, plugged: true, temp: 29, at: now() - 20e3, source: 'usb', usb: 'configured' };
   let approvals = [];
   const SAMPLE_PROMPTS = [
-    { tool: 'Run a command', detail: 'git push origin main --force-with-lease', description: 'Push the rebased branch', project: 'api-gateway' },
+    { tool: 'Run a command', detail: 'git push origin main --force-with-lease', description: 'Push the rebased branch', project: 'api-gateway', cwd: '/Users/me/work/api-gateway' },
     { tool: 'Edit a file', detail: 'src/routes/billing.ts\n\n  export const limit = rateLimit({ windowMs: 60_000, max: 120 })', description: '', project: 'docs-site' },
     { tool: 'Fetch a web page', detail: 'https://docs.github.com/en/rest/pulls', description: '', project: 'blog-engine' },
   ];
@@ -183,7 +184,7 @@
   function state(since) {
     const [title, artist, album, dur] = TRACKS[player.track];
     return {
-      update: null, ts: now(), host: 'DESK-PC', cfgVersion: cfgVersion(), pushVersion, evSeq: seq, rules: ['music'], rulesPaused: rulesPaused > now() ? rulesPaused : null,
+      update: null, ts: now(), host: 'DESK-PC', os: window.__demoOs || 'windows', cfgVersion: cfgVersion(), pushVersion, evSeq: seq, rules: ['music'], rulesPaused: rulesPaused > now() ? rulesPaused : null,
       events: since == null ? [] : events.filter((e) => e.seq > since),
       pc: {
         cpu: Math.max(1, wave(37, 8, 46, 0, 6)), cpuName: 'AMD Ryzen 9 7950X 16-Core Processor', cpuTemp: wave(60, 52, 68),
@@ -209,10 +210,14 @@
       privacy: (() => { const on = (now() / 1000) % 60 < 20; return { mic: on, camera: false, micApps: on ? ['Zoom'] : [], cameraApps: [] }; })(),
       obs: { streaming: !!obs.streamingSince, recording: !!obs.recordingSince, recordPaused: obs.paused },
       toggles: { ...toggles, ...Object.fromEntries(muteKeys.map((id) => [id, audio.muted])) },
+      // a face counts only for the list it was made for (an edited list starts over)
+      cycles: Object.fromEntries(Object.entries(cycles).filter(([id, v]) => cycleLists[id] === v.list).map(([id, v]) => [id, v.target])),
     };
   }
 
   const toggles = {};
+  let cycleLists = {}; // cycle key id -> its list now, as JSON
+  const cycles = {}, cyclePos = {}; // cycle keys: { target id, list } of the key that ran last, and its position in the list
   let muteKeys = ['mute']; // ids of the shortcuts whose command is builtin:mute; their state is the computer's
 
   // made-up OBS: streaming for a while, buttons and scenes work
@@ -544,10 +549,18 @@
     }
     if (path.startsWith('/api/run/') && method === 'POST') {
       // on / off keys flip in the demo; the mute key mutes the made-up computer
-      const id = decodeURIComponent(path.slice(9)), sc = (await config()).shortcuts.find((s) => s.id === id);
+      const id = decodeURIComponent(path.slice(9)), shortcuts = (await config()).shortcuts;
+      let sc = shortcuts.find((s) => s.id === id);
+      // ?hold=true runs the key's long-press shortcut instead (the agent resolves it; the phone sends only the held key's id)
+      if (sc && q.get('hold') === 'true') sc = sc.longPress && sc.longPress !== sc.id ? shortcuts.find((s) => s.id === sc.longPress) : null;
       if (!sc) return json({ title: 'An error occurred while processing your request.', status: 500, detail: 'unknown shortcut' }, 500);
-      if (sc.cmd === 'builtin:mute') audio.muted = !audio.muted;
-      else if (sc.toggle) toggles[id] = !toggles[id];
+      if (sc.cmd === 'builtin:cycle') {
+        const list = JSON.stringify(sc.cycle || []), n = (sc.cycle || []).length;
+        if (cyclePos[sc.id]?.list !== list) cyclePos[sc.id] = { list, at: -1 }; // an edited list starts over
+        if (n) { const at = cyclePos[sc.id].at = (cyclePos[sc.id].at + 1) % n; cycles[sc.id] = { target: sc.cycle[at], list }; }
+      }
+      else if (sc.cmd === 'builtin:mute') audio.muted = !audio.muted;
+      else if (sc.toggle) toggles[sc.id] = !toggles[sc.id];
       return json({});
     }
     if (path === '/api/quotas') return json(quotas());
@@ -577,6 +590,20 @@
         members: dc.in ? [{ id: '1', name: 'demo', muted: dc.muted, deafened: dc.deaf }, { id: '2', name: 'Ada', muted: false, deafened: false }, { id: '3', name: 'Linus', muted: true, deafened: false }] : [],
         channels: [{ id: 'c1', name: 'Game night', guild: 'Friends' }, { id: 'c2', name: 'Stand-up', guild: 'Work' }],
         notifications: [{ ts: now() - 60000, title: 'Ada', body: 'are you joining?' }] } });
+    }
+    if (path === '/api/steam') return json({ enabled: true, snapshot: {
+      connected: true, error: null, totalFriends: 2, onlineCount: 1, updated: now(),
+      friends: [
+        { id: '76561198000000001', name: 'Ada', state: 1, game: 'Hades II', hasAvatar: true, lastLogoff: null },
+        { id: '76561198000000002', name: 'Linus', state: 0, game: null, hasAvatar: true, lastLogoff: Math.floor(now() / 1000) - 7200 },
+      ],
+      activity: [{ id: '76561198000000001', name: 'Ada', hasAvatar: true, kind: 'playing', game: 'Hades II', at: now() - 180000 }],
+    } });
+    if (path === '/api/steam/avatar') {
+      const ada = q.get('id') === '76561198000000001';
+      const letter = ada ? 'A' : 'L', fill = ada ? '#7c3aed' : '#2563eb';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="48" fill="${fill}"/><text x="48" y="64" font-family="system-ui,sans-serif" font-size="48" font-weight="700" text-anchor="middle" fill="#fff">${letter}</text></svg>`;
+      return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml' } });
     }
     if (path.startsWith('/api/discord/') && method === 'POST') {
       if (!allows(await config(), (t) => t === 'discord')) return json({ error: "controlling Discord is turned off in the widget's settings" }, 400);

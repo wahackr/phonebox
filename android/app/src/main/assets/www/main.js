@@ -35,7 +35,7 @@ export const $ = (id) => document.getElementById(id);
 // The native bridge (window.Android) is in every frame, sandboxed widgets included, so each call carries a key that only
 // the panel's own frames receive (MainActivity.bridgeKey). This wrapper adds it.
 const BRIDGE = ['battery', 'buzz', 'haptic', 'is24Hour', 'pcs', 'selectPc', 'forgetPc', 'setBrightness', 'setHomeScreen', 'setOrientation',
-  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version', 'canListen', 'listen', 'stopListening', 'cancelListening', 'trackpad'];
+  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version', 'canListen', 'listen', 'stopListening', 'cancelListening', 'trackpad', 'canWake', 'wakePc'];
 export const bridge = typeof Android === 'undefined' ? null : Object.fromEntries(BRIDGE.filter((m) => typeof Android[m] === 'function')
   .map((m) => [m, (...args) => Android[m](window.__phoneboxKey || '', ...args)]));
 // Live preview inside the agent's layout editor: the layout comes from the editor (unsaved), not from the agent.
@@ -147,6 +147,43 @@ export async function api(path, method = 'GET', timeout = 2500) {
 
 export const haptic = () => { try { bridge && bridge.haptic(); } catch (_) {} };
 export const buzz = (p) => { try { if (bridge && !nightOn && cfg.display?.vibrate !== false) bridge.buzz(p); } catch (_) {} };
+// One AudioContext for the whole panel: Chrome limits how many can be open, so a new one per chime would run out.
+// It is suspended a second after the last tone, so a panel that runs all day doesn't keep an audio output open.
+let chimeCtx = null, chimeIdle = 0;
+/**
+ * A short tone for timers, made with Web Audio so the app needs no sound file. Silent on the night screen, like
+ * buzz(). volume is a percentage (10–100); finished plays a rising three-note pattern instead of two beeps.
+ */
+export const chime = (volume, finished = false) => {
+  try {
+    if (nightOn) return;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!chimeCtx) chimeCtx = new Ctx();
+    // a context made without a tap starts suspended in a desktop browser; the phone's WebView allows playback
+    if (chimeCtx.state === 'suspended') { const r = chimeCtx.resume(); if (r && r.catch) r.catch(() => {}); }
+    const peak = 0.4 * Math.min(100, Math.max(10, +volume || 60)) / 100; // below 1, so two notes never clip
+    const notes = finished ? [660, 880, 1100] : [880, 880];
+    const t0 = chimeCtx.currentTime + 0.02;
+    notes.forEach((freq, i) => {
+      const at = t0 + i * 0.25, osc = chimeCtx.createOscillator(), gain = chimeCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, at);
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.linearRampToValueAtTime(peak, at + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.22); // a quick fade-out, no click at the end
+      osc.connect(gain);
+      gain.connect(chimeCtx.destination);
+      osc.start(at);
+      osc.stop(at + 0.24);
+    });
+    clearTimeout(chimeIdle);
+    const ctx = chimeCtx;
+    chimeIdle = setTimeout(() => {
+      try { if (ctx.state === 'running' && ctx.suspend) { const r = ctx.suspend(); if (r && r.catch) r.catch(() => {}); } } catch (_) {}
+    }, (notes.length * 0.25 + 1) * 1000);
+  } catch (_) {}
+};
 export const transport = () => { try { return bridge ? bridge.transport() : ''; } catch (_) { return ''; } };
 
 /** h('div', 'cls', child, 'text', [more]) */
@@ -677,12 +714,13 @@ export function renderStatus(el, o = {}) {
 }
 
 // ---------------------------------------------------------------- shortcuts
-export async function runShortcut(btn, id) {
+export async function runShortcut(btn, id, hold = false) {
   haptic();
   btn.classList.remove('ok', 'err');
   btn.classList.add('busy');
   let ok = false;
-  try { await api('/run/' + encodeURIComponent(id), 'POST', 5000); ok = true; } catch (_) {}
+  // hold: the agent runs the key's own long-press shortcut; the phone still sends only this key's id
+  try { await api('/run/' + encodeURIComponent(id) + (hold ? '?hold=true' : ''), 'POST', 5000); ok = true; } catch (_) {}
   btn.classList.remove('busy');
   btn.classList.add(ok ? 'ok' : 'err');
   setTimeout(() => btn.classList.remove('ok', 'err'), 900);
@@ -692,14 +730,16 @@ export async function runShortcut(btn, id) {
  *  instead of the centred icon; without `label`, the key shows no name (screen readers still get it). */
 export function keyButton(s, { cover = false, label = true } = {}) {
   const icon = h('span', 'k-icon', s.icon ? rich(s.icon) : '•');
-  const b = h('button', 'key' + (s.toggle ? ' toggle' : '') + (label ? '' : ' k-nolabel'), icon, h('span', 'k-label', s.label));
+  const b = h('button', 'key' + (s.toggle ? ' toggle' : '') + (s.cycle ? ' cycle' : '') + (label ? '' : ' k-nolabel'), icon, h('span', 'k-label', s.label));
   // The agent accepts a blank label, and a filled key hides its icon, so the id keeps the button named when no text
   // is shown; visible text names it otherwise.
   const name = String(s.label || '').trim();
   if (!label || !name) b.setAttribute('aria-label', name || s.id);
   b.style.setProperty('--k', s.color || '#6b7280');
   b.dataset.id = s.id;
-  b.addEventListener('click', () => runShortcut(b, s.id));
+  b._cover = cover;
+  if (s.hold) holdToRun(b, s.id);
+  else b.addEventListener('click', () => runShortcut(b, s.id));
   // Only an upload fills the key: a program's own icon is 32 px on Windows, 64 px on macOS, and on Linux whatever logo
   // the icon theme has, none of them a picture the user chose for the button. The agent says which is which, since the
   // picture's size cannot tell (an SVG reports a default size, often 24 px from an icon set).
@@ -707,13 +747,50 @@ export function keyButton(s, { cover = false, label = true } = {}) {
   return b;
 }
 
+const HOLD_MS = 500, HOLD_SLOP = 12;
+/** A key with a long press: a tap runs the key, holding it for half a second runs its long-press shortcut instead (and
+ *  the tap that ends the hold does nothing). Moving the finger more than a few pixels turns it into a scroll, not a hold.
+ *  Only the pointer that started the press counts (a second finger, or a mouse's right button, never starts or ends one). */
+function holdToRun(b, id) {
+  let timer = 0, held = false, owner = null, x0 = 0, y0 = 0;
+  const cancel = () => { clearTimeout(timer); timer = 0; };
+  b.addEventListener('pointerdown', (e) => {
+    if (owner !== null || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    owner = e.pointerId; held = false; x0 = e.clientX; y0 = e.clientY; cancel();
+    timer = setTimeout(() => { timer = 0; held = true; runShortcut(b, id, true); }, HOLD_MS);
+  });
+  b.addEventListener('pointermove', (e) => { if (timer && e.pointerId === owner && Math.hypot(e.clientX - x0, e.clientY - y0) > HOLD_SLOP) cancel(); });
+  // the press is over when its own pointer lifts or is taken over (a scroll); `held` stays set until the click that follows
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, (e) => { if (e.pointerId === owner) { cancel(); owner = null; } });
+  b.addEventListener('contextmenu', (e) => e.preventDefault()); // Android's WebView opens a menu on a long press
+  b.addEventListener('click', () => { if (held) held = false; else runShortcut(b, id); });
+}
+
+/** Shows another shortcut's face on a key: a cycle key shows the key that ran last, with its icon (emoji, program icon or
+ *  upload) and name; the key's own picture is taken off. Shown with the key's own shortcut it restores the key's face. */
+export function setKeyFace(b, s, cover = false) {
+  b.dataset.face = s.id === b.dataset.id ? '' : s.id;
+  b.querySelectorAll('.k-bg, .k-shade').forEach((n) => n.remove());
+  b.classList.remove('k-cover');
+  const icon = b.querySelector('.k-icon');
+  icon.classList.remove('k-icon-img');
+  icon.replaceChildren(s.icon ? rich(s.icon) : '•');
+  b.querySelector('.k-label').textContent = s.label;
+  // a key that had no visible name is named by its id; the name follows the face
+  if (b.hasAttribute('aria-label')) b.setAttribute('aria-label', String(s.label || '').trim() || s.id);
+  if (s.iconRev != null) applyShortcutIcon(b, icon, s.id, cover && s.iconUpload === true);
+}
+
 function applyShortcutIcon(b, icon, id, cover) {
+  // a picture that arrives after the key changed face (a cycle key) is not the face any more: it is dropped
+  const current = () => (b.dataset.face || b.dataset.id) === id;
   const url = `${API}/shortcuts/icon?id=${encodeURIComponent(id)}`;
   const img = new Image();
   if (cover) {
     // the upload only: if it was removed since the config was read, the key falls back to the centred icon (the
     // program's own, or the emoji) instead of the agent's next choice stretched across it
     img.onload = () => {
+      if (!current()) return;
       img.className = 'k-bg';
       img.alt = '';
       b.prepend(img, h('span', 'k-shade'));
@@ -723,7 +800,7 @@ function applyShortcutIcon(b, icon, id, cover) {
     img.src = url + '&upload=true'; // "true", not "1": the agent binds it as a bool and answers 400 to "1"
     return;
   }
-  img.onload = () => { icon.replaceChildren(img); icon.classList.add('k-icon-img'); };
+  img.onload = () => { if (!current()) return; icon.replaceChildren(img); icon.classList.add('k-icon-img'); };
   img.src = url;
 }
 
@@ -1077,7 +1154,7 @@ export function handleNotify(d) {
   if (d.page != null) requestPage({ page: d.page, name: d.title || null, countdown: Number.isFinite(countdown) ? Math.min(30, Math.max(0, countdown)) : undefined });
 }
 
-// ---------------------------------------------------------------- permission prompts (Claude Code hook → phone)
+// ---------------------------------------------------------------- permission prompts (AI coding-agent hook → phone)
 export let approvals = [];
 export let approvalShown = null;
 
@@ -1131,8 +1208,16 @@ export function renderApproval() {
   const asking = a.kind === 'question';
   $('apAllow').hidden = $('apDeny').hidden = asking;
   $('apSkip').hidden = !asking;
-  $('apSource').textContent = a.source || 'Claude Code';
+  const source = a.source || 'AI agent';
+  const sourceKind = /codex/i.test(source) ? 'codex' : /claude/i.test(source) ? 'claude' : 'agent';
+  $('apLogo').textContent = sourceKind === 'codex' ? '◎' : sourceKind === 'claude' ? '✳' : '◆';
+  $('apLogo').className = `ap-logo ${sourceKind}`;
+  $('apSource').textContent = source;
   $('apProject').textContent = a.project || a.session || '';
+  // a long path keeps its end, which tells projects apart; the whole path is in the title
+  $('apCwd').textContent = (a.cwd || '').length > 140 ? '…' + a.cwd.slice(-139) : (a.cwd || '');
+  $('apCwd').title = a.cwd || '';
+  $('apContextSep').hidden = !(a.cwd && (a.project || a.session));
   $('apCount').textContent = approvals.length > 1 ? t('panel.oneOfN', { n: approvals.length }) : '';
   $('apTool').textContent = a.tool;
   $('apDesc').textContent = a.description || '';
@@ -1202,7 +1287,7 @@ export function handleEvent(e) {
   else if (e.kind === 'reload') location.reload();
 }
 
-export const WIDGET_ICONS = { camera: '📹', dictate: '🎙️', spectrum: '📶', 'app-console': '🎛️',discord: '💬', rules: '⚡', chargecare: '🔋', nextup: '⏭️', moon: '🌙', wordclock: '🔤', clock: '🕒', weather: '⛅', forecast: '🌦️', media: '🎵', stat: '📈', gauge: '⏲️', chart: '📊', meters: '💾', gpu: '🎮', quotas: '✳️', sessions: '🤖',
+export const WIDGET_ICONS = { camera: '📹', dictate: '🎙️', spectrum: '📶', 'app-console': '🎛️', discord: '💬', steam: '👥', 'steam-activity': '🔔', rules: '⚡', chargecare: '🔋', nextup: '⏭️', moon: '🌙', wordclock: '🔤', clock: '🕒', weather: '⛅', forecast: '🌦️', media: '🎵', stat: '📈', gauge: '⏲️', chart: '📊', meters: '💾', gpu: '🎮', quotas: '✳️', sessions: '🤖',
   github: '🐙', processes: '⚙️', shortcuts: '🎛️', button: '🔘', worldclock: '🌍', calendar: '📅', pomodoro: '🍅', countdown: '⏳', note: '📝', command: '💻',
   push: '📡', inbox: '📬', label: '🔤', analog: '🕰️', progress: '📆', stopwatch: '⏱️', timer: '⏲️', counter: '🔢', breathe: '🫁', quote: '💬',
   checklist: '✅', battery: '🔋', topprocs: '🔥', quotaring: '🎯', volume: '🔊', sun: '🌅', air: '🍃', hackernews: '📰', feeds: '🗞️', photos: '🖼️', exchange: '💱', crypto: '🪙', image: '🖼️', pcswitch: '🖥️' };
@@ -1889,6 +1974,12 @@ export function setNight(on) {
   document.body.classList.toggle('night', on);
   applyBrightness(true);
 }
+/**
+ * Before widgets are built: a timer that ran out while the panel was closed rings during the build, so the night
+ * screen must already be on if the schedule says so (nightOn is null at start, and new settings may move the night).
+ * Only ever turns night on; tick() keeps the state up to date as before, so the day is unchanged.
+ */
+function nightBeforeBuild() { if (isNight(new Date()) && Date.now() > wakeUntil) setNight(true); }
 
 // ---------------------------------------------------------------- phone sensors
 // Room light (lux) and proximity come from the Android shell. Brightness can follow the room, the night screen can
@@ -2052,6 +2143,7 @@ export async function loadConfig() {
     if (first || JSON.stringify(cfg) !== before) {
       store.set('cfg', cfg);
       if (JSON.stringify(cfg) !== before) {
+        nightBeforeBuild();
         buildLayout();
         applyDisplay();
       }
@@ -2112,8 +2204,50 @@ export async function loadPush() {
   } catch (_) {}
 }
 
+// ---------------------------------------------------------------- Wake-on-LAN
+// While the PC is unreachable the app (which holds the PC's MAC addresses) can wake it. The page only ever passes the
+// computer's id to the bridge. One tap sends one burst; the button waits 10 s before it can send again and reports
+// "didn't wake" after 3 minutes. The agent answering again (setOnline(true)) resets everything.
+const WAKE_COOLDOWN_MS = 10_000, WAKE_WINDOW_MS = 180_000;
+let wakeAt = 0, wakeTicker = 0, canWakeAt = 0, canWakeNow = false;
+// canWake() looks at the phone's network interfaces: asked at most every 5 s, since a PC that sleeps all night keeps
+// this panel offline (and calling it on every failed poll) for hours
+function wakeAvailable() {
+  if (Date.now() - canWakeAt > 5000) { canWakeAt = Date.now(); canWakeNow = !!bridge?.canWake?.(); }
+  return canWakeNow;
+}
+function wakeRender() {
+  const box = $('wake');
+  if (!box) return;
+  const waited = wakeAt ? Date.now() - wakeAt : Infinity;
+  const waking = waited < WAKE_WINDOW_MS;
+  // the 1 s timer only runs while a wake is in progress (the cooldown and the 3 minutes), not for the whole outage;
+  // stopped before the hidden check below, because the phone may have left the network and hidden the button meanwhile
+  if (!waking && wakeTicker) { clearInterval(wakeTicker); wakeTicker = 0; }
+  const offline = document.body.classList.contains('offline');
+  box.hidden = !(offline && wakeAvailable());
+  if (box.hidden) return;
+  const btn = box.querySelector('button');
+  btn.textContent = t(waking ? 'panel.waking' : 'panel.wake');
+  btn.disabled = waited < WAKE_COOLDOWN_MS;
+  box.querySelector('.note').textContent = wakeAt && !waking ? t('panel.wakeFailed') : '';
+}
+$('wake')?.querySelector('button').addEventListener('click', () => {
+  if (Date.now() - wakeAt < WAKE_COOLDOWN_MS) return;
+  const pc = pairedPcs().find((p) => p.active);
+  if (!pc || !bridge?.wakePc) return;
+  haptic();
+  if (bridge.wakePc(pc.id)) {
+    wakeAt = Date.now();
+    if (!wakeTicker) wakeTicker = setInterval(wakeRender, 1000);
+  } else toast(t('panel.wakeFailed'), 'err');
+  wakeRender();
+});
+
 export function setOnline(on) {
   document.body.classList.toggle('offline', !on);
+  if (on) { wakeAt = 0; clearInterval(wakeTicker); wakeTicker = 0; }
+  wakeRender();
   if (on && online !== true) { loadConfig(); loadQuotas(); loadWork(); loadPush(); loadApprovals(); loadCalendar(); }
   const changed = online !== on;
   online = on;
@@ -2238,6 +2372,7 @@ function beat() {
 }
 
 // ---------------------------------------------------------------- start
+nightBeforeBuild();
 buildLayout();
 applyDisplay();
 tick();
